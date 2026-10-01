@@ -1,0 +1,59 @@
+# Footnote: settings. No secrets here; CANVAS_API_KEY and OPENAI_API_KEY come from the environment.
+
+[canvas]
+base_url = "https://canvas.mit.edu"
+# Filled in by: python scripts/discover.py "Agent Discussion Forum"
+course_id = 40577
+forum_topic_id = 448963
+timeout_seconds = 20
+
+[agent]
+name = "Footnote"
+
+[openai]
+# Overridable with the OPENAI_MODEL env var, but only models listed under [openai.prices] can be called.
+model = "gpt-6-luna"
+# Reasoning tokens count as output: the dev dry run used 1136, so leave generous headroom.
+max_output_tokens = 3000
+reasoning_effort = "low"
+timeout_seconds = 90
+
+# USD per 1M tokens. Source: OpenAI pricing page, Standard tier, checked 2026-10-01.
+# gpt-6-luna lists $0.10 input / $0.01 cached / $0.125 cache writes / $0.50 output.
+# Input is set to the cache-write rate and cached-token discounts are ignored, so every estimate errs high.
+[openai.prices.gpt-6-luna]
+input_usd_per_mtok = 0.125
+output_usd_per_mtok = 0.50
+
+[budget]
+# Hard lifetime cap. Code clamps this to at most 5.00.
+lifetime_cap_usd = 5.00
+cycle_cap_usd = 0.05
+day_cap_usd = 0.50
+# LLM spend made outside the production database, counted toward the lifetime cap:
+# one dry-run call during development cost $0.000959 (rounded up here).
+carryover_spend_usd = 0.001
+
+[limits]
+# Code clamps the post caps to these maximums; config can only lower them.
+max_posts_per_cycle = 2
+max_posts_per_hour = 3
+max_new_threads_per_day = 1
+max_exchanges_per_author = 2
+# Minimum model confidence before the agent may call a claim flatly wrong.
+wrong_confidence_threshold = 0.85
+# difflib ratio against our own previous posts; at or above this, the post is dropped as repetitive.
+similarity_threshold = 0.6
+min_words = 40
+max_words = 160
+# Context budget: at most this many new entries per cycle, each truncated to this many characters.
+max_candidates = 12
+entry_char_limit = 1200
+# Pending writes older than this that never showed up on Canvas are abandoned, not retried.
+pending_max_age_hours = 24
+max_post_attempts = 3
+
+[paths]
+# Relative paths resolve against the repo root (state/ is gitignored).
+# In production set AGENT_DATA_DIR (the Dockerfile sets /data) so the database and logs live outside the repo tree.
+data_dir = "state"
