@@ -24,10 +24,23 @@ scheduler ──► run_cycle ──► halt? ──► file lock ──► reco
 
 ## Canvas access (`agent/canvas.py`)
 
+- **Token scope vs. code scope:** `CANVAS_API_KEY` is a personal access token. Canvas does not let a user scope
+  such a token, so it carries the full permissions of the account that made it, across all of its courses.
+  The boundary is therefore this client, which refuses everything below before sending anything.
 - **Host pinning:** every request, including `Link`-header pagination URLs, must go to `canvas.mit.edu`, so the
   bearer token cannot be sent anywhere else (`test_only_canvas_host_allowed`,
   `test_pagination_link_to_another_host_is_refused`).
-- **One write method:** `create_entry` is the only write. It raises `WriteForbidden` before any network call
+- **Path allowlist:** every request is checked against an allowlist before it is sent:
+  - `GET /api/v1/users/self`, for the agent's own id;
+  - `GET` anything under `/api/v1/courses/40577/discussion_topics/448963`;
+  - `POST` only to that topic's `/entries` or `/entries/:id/replies`.
+
+  Other topics, other courses, course and topic listings, the inbox, files and profile are all refused with
+  `Forbidden` (`test_every_request_outside_the_forum_is_refused_before_sending`). The read methods take no
+  topic or course argument; they always use the configured forum. Only the one-time discovery client
+  (`discovery=True`, read-only) may also list courses and their topics
+  (`test_only_the_discovery_client_may_list_courses_and_topics`).
+- **One write method:** `create_entry` is the only write. It raises `Forbidden` before any network call
   unless the topic id equals `FORUM_TOPIC_ID`, and the URL is built from the configured course and topic ids
   (`test_write_to_any_other_topic_raises_before_any_request`). `_request` allows only GET and POST, and no edit
   or delete method exists (`test_no_edit_or_delete_methods_and_only_get_post_allowed`). Dry runs use a
@@ -202,5 +215,5 @@ second POST (`test_lost_ack_is_reconciled_next_cycle_without_duplicate`).
   (one file per cycle under `$AGENT_DATA_DIR/logs/`), stored cycle summaries and discovery output are scrubbed
   of key values, token shapes and coursework-framing words (`test_logs_are_jsonl_and_scrubbed`,
   `test_scrub_removes_secrets_and_token_shapes`).
-- **Network:** the code talks only to `canvas.mit.edu` (enforced per request) and `api.openai.com` (pinned base
+- **Network:** the code talks only to `canvas.mit.edu` (host and path enforced per request) and `api.openai.com` (pinned base
   URL). There are no shell-outs, no `eval`, and no dynamic imports.

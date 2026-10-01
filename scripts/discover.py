@@ -35,7 +35,8 @@ def main() -> int:
     args = parser.parse_args()
 
     cfg = load_config(args.config)
-    canvas = Canvas(cfg.canvas_base_url, canvas_token(), None, None, timeout=cfg.canvas_timeout, read_only=True)
+    canvas = Canvas(cfg.canvas_base_url, canvas_token(), None, None, timeout=cfg.canvas_timeout, read_only=True,
+                    discovery=True)
 
     me = canvas.self_profile()
     print(f"authenticated as user id {me.get('id')}")

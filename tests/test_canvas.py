@@ -1,6 +1,6 @@
 import pytest
 
-from agent.canvas import Canvas, CanvasAuthError, GateClosed, WriteForbidden
+from agent.canvas import Canvas, CanvasAuthError, GateClosed, Forbidden
 from tests.conftest import COURSE, FAKE_CANVAS_KEY, OTHER_TOPIC, SELF_ID, TOPIC, no_sleep
 
 
@@ -56,15 +56,15 @@ def test_gate_is_rechecked_immediately_before_every_write(canvas):
 
 def test_write_to_any_other_topic_raises_before_any_request(canvas):
     c = client()
-    with pytest.raises(WriteForbidden):
+    with pytest.raises(Forbidden):
         c.create_entry(OTHER_TOPIC, "<p>hi</p>")
-    with pytest.raises(WriteForbidden):
+    with pytest.raises(Forbidden):
         c.create_entry(str(OTHER_TOPIC), "<p>hi</p>", parent_entry_id=1)
     assert canvas.requests == []
 
 
 def test_read_only_client_cannot_write(canvas):
-    with pytest.raises(WriteForbidden):
+    with pytest.raises(Forbidden):
         client(read_only=True).create_entry(TOPIC, "<p>hi</p>")
     assert canvas.requests == []
 
@@ -73,25 +73,25 @@ def test_no_edit_or_delete_methods_and_only_get_post_allowed(canvas):
     c = client()
     for name in dir(c):
         assert not any(word in name.lower() for word in ("delete", "edit", "update", "put"))
-    with pytest.raises(WriteForbidden):
+    with pytest.raises(Forbidden):
         c._request("DELETE", f"https://canvas.mit.edu/api/v1/courses/{COURSE}/discussion_topics/{TOPIC}")
-    with pytest.raises(WriteForbidden):
+    with pytest.raises(Forbidden):
         c._request("PUT", f"https://canvas.mit.edu/api/v1/courses/{COURSE}/discussion_topics/{TOPIC}")
 
 
 def test_only_canvas_host_allowed():
-    with pytest.raises(WriteForbidden):
+    with pytest.raises(Forbidden):
         Canvas("https://evil.example.com", FAKE_CANVAS_KEY, COURSE, TOPIC)
     c = client()
-    with pytest.raises(WriteForbidden):
+    with pytest.raises(Forbidden):
         c._request("GET", "https://evil.example.com/steal")
 
 
 def test_pagination_link_to_another_host_is_refused(requests_mock):
     requests_mock.get("https://canvas.mit.edu/api/v1/courses",
                       json=[{"id": 1}], headers={"Link": '<https://evil.example.com/page2>; rel="next"'})
-    with pytest.raises(WriteForbidden):
-        client().active_courses()
+    with pytest.raises(Forbidden):
+        client(discovery=True).active_courses()
 
 
 def test_pagination_follows_link_header(requests_mock):
@@ -99,7 +99,7 @@ def test_pagination_follows_link_header(requests_mock):
                       json=[{"id": 1}],
                       headers={"Link": '<https://canvas.mit.edu/api/v1/courses?page=2&per_page=100>; rel="next"'})
     requests_mock.get("https://canvas.mit.edu/api/v1/courses?page=2&per_page=100", json=[{"id": 2}])
-    assert [c["id"] for c in client().active_courses()] == [1, 2]
+    assert [c["id"] for c in client(discovery=True).active_courses()] == [1, 2]
 
 
 @pytest.mark.parametrize("status", [401, 403])
@@ -129,3 +129,48 @@ def test_canvas_throttle_403_is_transient_not_a_halt(requests_mock):
                       text="403 Forbidden (Rate Limit Exceeded)")
     with pytest.raises(CanvasTransientError):
         client().self_profile()
+
+
+@pytest.mark.parametrize("method, path", [
+    ("GET", f"/api/v1/courses/{COURSE}/discussion_topics/{OTHER_TOPIC}"),          # another topic, same course
+    ("GET", f"/api/v1/courses/{COURSE}/discussion_topics/{OTHER_TOPIC}/view"),
+    ("GET", f"/api/v1/courses/{COURSE}/discussion_topics/{TOPIC}9"),                # prefix trick
+    ("GET", f"/api/v1/courses/2/discussion_topics/{TOPIC}"),                         # another course
+    ("GET", "/api/v1/courses"),                                                      # course list
+    ("GET", f"/api/v1/courses/{COURSE}/discussion_topics"),                          # topic list
+    ("GET", f"/api/v1/courses/{COURSE}/users"),                                      # roster
+    ("GET", "/api/v1/conversations"),                                                # inbox
+    ("GET", "/api/v1/users/self/files"),
+    ("GET", "/api/v1/users/self/profile"),
+    ("POST", "/api/v1/conversations"),
+    ("POST", f"/api/v1/courses/{COURSE}/discussion_topics/{TOPIC}/view"),            # POST outside entries
+    ("POST", f"/api/v1/courses/{COURSE}/discussion_topics/{OTHER_TOPIC}/entries"),
+])
+def test_every_request_outside_the_forum_is_refused_before_sending(canvas, method, path):
+    with pytest.raises(Forbidden):
+        client()._request(method, f"https://canvas.mit.edu{path}")
+    assert canvas.requests == []
+
+
+def test_forum_reads_and_self_are_allowed(canvas):
+    root = canvas.add(200, "thread")
+    c = client()
+    assert c.self_profile()["id"] == SELF_ID
+    c.topic()
+    c.topic_view()
+    c.top_level_entries()
+    c.entry_replies(root)
+    c.entry_list([root])
+
+
+def test_only_the_discovery_client_may_list_courses_and_topics(requests_mock):
+    requests_mock.get("https://canvas.mit.edu/api/v1/courses", json=[{"id": 1}])
+    requests_mock.get(f"https://canvas.mit.edu/api/v1/courses/1/discussion_topics", json=[{"id": TOPIC}])
+    with pytest.raises(Forbidden):
+        client().active_courses()
+    discovery = Canvas("https://canvas.mit.edu", FAKE_CANVAS_KEY, None, None, sleep=no_sleep, read_only=True,
+                       discovery=True)
+    assert discovery.active_courses() == [{"id": 1}]
+    assert discovery.course_topics(1) == [{"id": TOPIC}]
+    with pytest.raises(Forbidden):
+        discovery.create_entry(TOPIC, "<p>hi</p>")

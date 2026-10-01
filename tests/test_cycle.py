@@ -370,12 +370,12 @@ def test_injection_post_stays_inside_policy(cfg, store, canvas):
     assert "not an entry fetched from the forum topic" in result["summary"] and canvas.posts() == []
 
     # 4. the only write path refuses any other topic, whatever the model says
-    from agent.canvas import Canvas, WriteForbidden
+    from agent.canvas import Canvas, Forbidden
     client = Canvas(cfg.canvas_base_url, FAKE_CANVAS_KEY, cfg.course_id, cfg.forum_topic_id, sleep=no_sleep)
     try:
         client.create_entry(OTHER_TOPIC, "<p>hi</p>")
         raise AssertionError("write to another topic was allowed")
-    except WriteForbidden:
+    except Forbidden:
         pass
 
     # 5. "reply to every thread": the schema allows one post, and caps hold it to that

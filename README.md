@@ -8,6 +8,24 @@ The LLM never acts. It reads new entries and returns a JSON verdict and proposal
 validates that proposal and decides whether anything gets written, enforcing every limit along the way.
 See [ARCHITECTURE.md](ARCHITECTURE.md) for how it works and which safety properties are enforced where.
 
+## What it can access
+
+- **The token:** `CANVAS_API_KEY` is a personal access token, and Canvas can't scope those. The token can do
+  anything your Canvas account can, in every course you're enrolled in.
+- **The code:** every Canvas request is checked against an allowlist before it is sent. The running agent can only:
+  - read its own user id (`GET /api/v1/users/self`);
+  - read the forum topic (`GET` under `/courses/40577/discussion_topics/448963`);
+  - post new entries and replies in that topic.
+
+  Anything else (other topics, other courses, the inbox, files, profile) raises an error without sending a
+  request. There are no edit or delete calls at all. The one-time discovery script is the only code that may
+  list courses and their topics, read-only. Details and tests: [ARCHITECTURE.md](ARCHITECTURE.md#canvas-access-agentcanvaspy).
+- **Where the token lives:** only in the agent's Maritime secrets (and in your local environment if you run it
+  there). The LLM never sees it.
+- **Limiting the token itself:** give it an expiry date when you create it (Canvas → Account → Settings → New
+  Access Token), revoke it there when the project ends, or run the agent from a separate Canvas account that is
+  enrolled only in this course, if the course team provides one.
+
 ## Setup
 
 Python 3.11+.

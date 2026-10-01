@@ -2,6 +2,10 @@
 
 Safety properties enforced here, not in any prompt:
   * every request goes to the configured Canvas host only (pagination links included);
+  * every request path is allowlisted: GET /api/v1/users/self, and GET/POST inside
+    /api/v1/courses/COURSE_ID/discussion_topics/FORUM_TOPIC_ID. Nothing else in Canvas
+    (other topics, courses, inbox, files, profile edits) can be reached. Only the
+    one-time discovery client may also list courses and their topics;
   * the only write is create_entry, and it refuses any topic other than FORUM_TOPIC_ID;
   * create_entry re-checks the control line immediately before each POST;
   * 401/403 raise CanvasAuthError, which halts the agent.
@@ -9,6 +13,7 @@ There is deliberately no edit or delete method.
 """
 
 import random
+import re
 import time
 from typing import Callable
 from urllib.parse import urlparse
@@ -43,8 +48,8 @@ class LostAck(Exception):
     cycle's reconcile has to find the entry."""
 
 
-class WriteForbidden(Exception):
-    """Attempted write outside the allowed topic, or from a read-only client."""
+class Forbidden(Exception):
+    """A request outside the allowlist (host, method, path), or a write outside the forum topic."""
 
 
 class GateClosed(Exception):
@@ -60,10 +65,10 @@ class Canvas:
                  timeout: float = 20, session: requests.Session | None = None,
                  sleep: Callable[[float], None] = time.sleep, log=_noop_log,
                  read_only: bool = False, fault: Callable[[], bool] | None = None,
-                 get_attempts: int = 3):
+                 get_attempts: int = 3, discovery: bool = False):
         host = urlparse(base_url).hostname
         if host != CANVAS_HOST:
-            raise WriteForbidden(f"Canvas host must be {CANVAS_HOST}, got {host}")
+            raise Forbidden(f"Canvas host must be {CANVAS_HOST}, got {host}")
         self.base_url = base_url.rstrip("/")
         self.course_id = int(course_id) if course_id is not None else None
         self.forum_topic_id = int(forum_topic_id) if forum_topic_id is not None else None
@@ -75,6 +80,7 @@ class Canvas:
         self.read_only = read_only
         self.fault = fault
         self.get_attempts = get_attempts
+        self.discovery = discovery
 
     # ------------------------------------------------------------------ http
 
@@ -83,9 +89,11 @@ class Canvas:
 
     def _request(self, method: str, url: str, **kwargs) -> requests.Response:
         if method not in ("GET", "POST"):
-            raise WriteForbidden(f"method {method} is not allowed")
+            raise Forbidden(f"method {method} is not allowed")
         if urlparse(url).hostname != CANVAS_HOST:
-            raise WriteForbidden(f"refusing request to non-Canvas host {urlparse(url).hostname}")
+            raise Forbidden(f"refusing request to non-Canvas host {urlparse(url).hostname}")
+        if not self._path_allowed(method, urlparse(url).path):
+            raise Forbidden(f"refusing {method} {urlparse(url).path}: outside the forum topic")
         try:
             resp = self.session.request(method, url, timeout=self.timeout, **kwargs)
         except requests.Timeout as e:
@@ -104,6 +112,23 @@ class Canvas:
         if status >= 400:
             raise CanvasError(f"{method} {urlparse(url).path} -> {status}")
         return resp
+
+    def _forum_prefix(self) -> str | None:
+        if self.course_id is None or self.forum_topic_id is None:
+            return None
+        return f"/api/v1/courses/{self.course_id}/discussion_topics/{self.forum_topic_id}"
+
+    def _path_allowed(self, method: str, path: str) -> bool:
+        prefix = self._forum_prefix()
+        if method == "POST":
+            return prefix is not None and re.fullmatch(re.escape(prefix) + r"/entries(/\d+/replies)?", path) is not None
+        if path == "/api/v1/users/self":
+            return True
+        if prefix is not None and (path == prefix or path.startswith(prefix + "/")):
+            return True
+        if self.discovery:
+            return path == "/api/v1/courses" or re.fullmatch(r"/api/v1/courses/\d+/discussion_topics", path) is not None
+        return False
 
     def _respect_rate_limit(self, resp: requests.Response) -> None:
         remaining = resp.headers.get("X-Rate-Limit-Remaining")
@@ -169,24 +194,20 @@ class Canvas:
     def course_topics(self, course_id: int) -> list:
         return self.get_paginated(f"/api/v1/courses/{int(course_id)}/discussion_topics")
 
-    def _topic_path(self, topic_id: int | None = None) -> str:
-        topic_id = self.forum_topic_id if topic_id is None else int(topic_id)
-        return f"/api/v1/courses/{self.course_id}/discussion_topics/{topic_id}"
+    def topic(self) -> dict:
+        return self.get_json(self._forum_prefix())
 
-    def topic(self, topic_id: int | None = None) -> dict:
-        return self.get_json(self._topic_path(topic_id))
+    def topic_view(self) -> dict:
+        return self.get_json(self._forum_prefix() + "/view", {"include_new_entries": 1})
 
-    def topic_view(self, topic_id: int | None = None) -> dict:
-        return self.get_json(self._topic_path(topic_id) + "/view", {"include_new_entries": 1})
+    def top_level_entries(self) -> list:
+        return self.get_paginated(self._forum_prefix() + "/entries")
 
-    def top_level_entries(self, topic_id: int | None = None) -> list:
-        return self.get_paginated(self._topic_path(topic_id) + "/entries")
+    def entry_replies(self, entry_id: int) -> list:
+        return self.get_paginated(self._forum_prefix() + f"/entries/{int(entry_id)}/replies")
 
-    def entry_replies(self, entry_id: int, topic_id: int | None = None) -> list:
-        return self.get_paginated(self._topic_path(topic_id) + f"/entries/{int(entry_id)}/replies")
-
-    def entry_list(self, ids: list[int], topic_id: int | None = None) -> list:
-        data = self.get_json(self._topic_path(topic_id) + "/entry_list", {"ids[]": [int(i) for i in ids]})
+    def entry_list(self, ids: list[int]) -> list:
+        data = self.get_json(self._forum_prefix() + "/entry_list", {"ids[]": [int(i) for i in ids]})
         if not isinstance(data, list):
             raise MalformedResponse("entry_list: expected a list")
         return data
@@ -196,7 +217,7 @@ class Canvas:
     def control_gate(self) -> tuple[bool, str]:
         """Fail closed: only an exact RUNNING first line opens the gate."""
         try:
-            topic = self.topic(self.forum_topic_id)
+            topic = self.topic()
         except CanvasAuthError:
             raise
         except Exception as e:  # any failed fetch keeps the gate shut
@@ -212,15 +233,15 @@ class Canvas:
     def create_entry(self, topic_id: int, message_html: str, parent_entry_id: int | None = None) -> dict:
         """POST a new top-level entry or a reply. The one and only write in the codebase."""
         if self.read_only:
-            raise WriteForbidden("client is read-only (dry run)")
+            raise Forbidden("client is read-only (dry run)")
         if self.forum_topic_id is None or self.course_id is None or int(topic_id) != self.forum_topic_id:
-            raise WriteForbidden(f"writes are only allowed to topic {self.forum_topic_id}, not {topic_id}")
+            raise Forbidden(f"writes are only allowed to topic {self.forum_topic_id}, not {topic_id}")
 
         is_open, line = self.control_gate()
         if not is_open:
             raise GateClosed(line)
 
-        path = self._topic_path(self.forum_topic_id) + "/entries"
+        path = self._forum_prefix() + "/entries"
         if parent_entry_id is not None:
             path += f"/{int(parent_entry_id)}/replies"
         resp = self._request("POST", self._url(path), data={"message": message_html})
