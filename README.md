@@ -62,39 +62,38 @@ wake trigger, and at each occurrence delivers `{"message": "run-cycle", "source"
 The server replies at once (Maritime allows 30 seconds) and runs one cycle in a background thread. Any other
 chat message does nothing.
 
-You created `canvas_post_agent` from the OpenClaw template. OpenClaw is an LLM agent with tools, which is
-exactly what this design avoids, so rebuild that agent from this repo:
+Create the agent as a **custom** agent built from this repo. Don't redeploy an agent made from a template:
+`maritime deploy --source github` onto an OpenClaw agent rebuilt from the repo but kept the OpenClaw framework,
+and no schedule was registered. Run these on your own machine (the `maritime` CLI: `npm install -g maritime-cli`,
+then `maritime login`):
 
 ```bash
-maritime env set canvas_post_agent CANVAS_API_KEY=... OPENAI_API_KEY=...
-maritime deploy canvas_post_agent --source github \
-  --repo https://github.com/KevinChunye/canvas_chat_bot --branch factcheck_agent --wait
-maritime triggers list canvas_post_agent     # should list the 3-hourly cron after the first wake
-maritime logs canvas_post_agent
+maritime create footnote_agent --framework custom \
+  --repo https://github.com/KevinChunye/canvas_chat_bot --branch factcheck_agent --idle 900
+# then add CANVAS_API_KEY and OPENAI_API_KEY as secrets under the agent's Settings in the dashboard
+maritime restart footnote_agent
+maritime info footnote_agent             # Framework: custom
+maritime triggers list footnote_agent    # a cron trigger synced from /schedules ("byo_sync")
 ```
 
-Do not press "Use Maritime LLM". It would replace `OPENAI_API_KEY` with a proxy token, and the client is pinned
-to api.openai.com. If the repo is private, Maritime needs its GitHub App installed on it.
-
-Operator commands run inside the agent with `maritime exec` (AGENT_DATA_DIR is spelled out so the command
-always uses the `/data` database):
-
-```bash
-maritime exec canvas_post_agent env AGENT_DATA_DIR=/data python -m agent.cli status
-maritime exec canvas_post_agent env AGENT_DATA_DIR=/data python -m agent.cli report
-```
-
-The docs don't say whether `deploy --source github` changes an existing agent's framework from OpenClaw to
-custom. If `maritime info canvas_post_agent` still shows OpenClaw afterwards, create a fresh custom agent instead:
-
-```bash
-maritime create footnote --repo https://github.com/KevinChunye/canvas_chat_bot --branch factcheck_agent \
-  -e CANVAS_API_KEY=... -e OPENAI_API_KEY=... --idle 900
-```
+Setting the keys in the dashboard keeps them out of your shell history. Do not press "Use Maritime LLM": it
+would replace `OPENAI_API_KEY` with a proxy token, and the client is pinned to api.openai.com. If the repo is
+private, Maritime needs its GitHub App installed on it.
 
 `--idle 900` keeps the VM awake 15 minutes after each wake so the background cycle finishes before auto-sleep.
 If the VM does sleep mid-cycle, it resumes from a snapshot, and the idempotent write path covers any
 interrupted POST.
+
+The `agent.cli` commands below run **inside the agent**, not on your machine: the code and the database live
+there. Either type them in the agent's **Console** tab in the dashboard, or send them with `maritime exec`. With
+`exec`, put `--` before the command. Without it the CLI tries to read `-m` as one of its own options and fails
+with "unknown option". `AGENT_DATA_DIR` is spelled out so the command always uses the `/data` database:
+
+```bash
+maritime exec footnote_agent -- env AGENT_DATA_DIR=/data python -m agent.cli status
+maritime exec footnote_agent -- env AGENT_DATA_DIR=/data python -m agent.cli report
+maritime exec footnote_agent -- env AGENT_DATA_DIR=/data python -m agent.cli dry-run   # no posts, about $0.001
+```
 
 ### Fallback: cron on any Linux box
 
@@ -121,7 +120,7 @@ A halted agent does nothing until someone clears the flag:
 python -m agent.cli status
 python -m agent.cli unhalt
 # on Maritime:
-maritime exec canvas_post_agent env AGENT_DATA_DIR=/data python -m agent.cli unhalt
+maritime exec footnote_agent -- env AGENT_DATA_DIR=/data python -m agent.cli unhalt
 ```
 
 The course team can also pause it without touching the agent. Any first line of the topic description other than
@@ -134,7 +133,7 @@ After a few scheduled cycles have run normally, arm the one-shot fault:
 ```bash
 python -m agent.cli fault drop_ack_once
 # on Maritime:
-maritime exec canvas_post_agent env AGENT_DATA_DIR=/data python -m agent.cli fault drop_ack_once
+maritime exec footnote_agent -- env AGENT_DATA_DIR=/data python -m agent.cli fault drop_ack_once
 ```
 
 The next real POST reaches Canvas, but the client discards the response and raises, as if the reply had been lost.
