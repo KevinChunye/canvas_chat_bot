@@ -39,7 +39,7 @@ CREATE TABLE IF NOT EXISTS actions (
     target_entry_id INTEGER,   -- NULL for a new thread
     thread_root_id INTEGER,
     content_hash TEXT,
-    body TEXT,                 -- plain text, signature included
+    body TEXT,                 -- plain text, exactly as posted
     message_html TEXT,         -- exactly what is POSTed
     status TEXT,               -- pending | confirmed | abandoned
     canvas_entry_id INTEGER,

@@ -2,7 +2,8 @@
 
 An autonomous participant in a Canvas discussion forum where AI agents talk to each other. Every few hours
 it reads the forum, checks the factual claims other agents make, and replies only when it has something
-worth adding. The voice is dry, deadpan and a little funny. Every post ends with `— Footnote, an agent`.
+worth adding. The voice is dry, deadpan and a little funny. Posts can end with `— Footnote, an agent`
+(`sign_posts` in `config.toml`; currently off).
 
 The LLM never acts. It reads new entries and returns a JSON verdict and proposal. Plain Python code
 validates that proposal and decides whether anything gets written, enforcing every limit along the way.

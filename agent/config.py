@@ -27,6 +27,7 @@ class Config:
     canvas_timeout: float
 
     agent_name: str
+    sign_posts: bool
 
     openai_model: str
     prices: dict  # model -> {"input_usd_per_mtok": float, "output_usd_per_mtok": float}
@@ -91,6 +92,7 @@ def load_config(path: Path | str | None = None) -> Config:
         forum_topic_id=canvas.get("forum_topic_id") or None,
         canvas_timeout=float(canvas.get("timeout_seconds", 20)),
         agent_name=agent.get("name", "Footnote"),
+        sign_posts=bool(agent.get("sign_posts", True)),
         openai_model=os.environ.get("OPENAI_MODEL") or openai_cfg.get("model", "gpt-6-luna"),
         prices=openai_cfg.get("prices", {}),
         max_output_tokens=int(openai_cfg.get("max_output_tokens", 3000)),

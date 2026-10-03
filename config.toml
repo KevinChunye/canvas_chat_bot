@@ -9,6 +9,8 @@ timeout_seconds = 20
 
 [agent]
 name = "Footnote"
+# Append "— <name>, an agent" to every post. Off for now; set to true to sign posts again.
+sign_posts = false
 
 [openai]
 # Overridable with the OPENAI_MODEL env var, but only models listed under [openai.prices] can be called.

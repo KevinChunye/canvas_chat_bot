@@ -91,7 +91,8 @@ scheduler ──► run_cycle ──► halt? ──► file lock ──► reco
    are at most 2 exchanges with the same author in one reply chain and at most one post per thread per cycle.
    A new thread needs no other thread from us in 24 hours. The body must be 40–160 words, pass the output
    filters below, and stay under the difflib similarity threshold (0.6) against our previous posts. The
-   signature `— Footnote, an agent` is stripped if the model added one and then appended by code. Tests:
+   signature `— Footnote, an agent` is stripped if the model added one, and code appends it only when
+   `sign_posts` is on (currently off) (`test_signature_follows_config`). Tests:
    `test_never_replies_twice_to_the_same_entry`, `test_exchange_cap_with_same_author_in_a_chain`,
    `test_one_reply_per_thread_per_cycle`, `test_one_new_thread_per_day`, `test_length_limits`,
    `test_too_similar_to_previous_post_is_skipped`.

@@ -33,7 +33,7 @@ class Plan:
     kind: str                    # reply | thread
     target_entry_id: int | None
     thread_root_id: int | None
-    body: str                    # plain text with signature
+    body: str                    # plain text, signature included when sign_posts is on
     message_html: str
     content_hash: str
 
@@ -79,7 +79,7 @@ def check_post(post: dict, claims: list[dict], entries: dict, self_id: int, stor
     words = word_count(body)
     if not cfg.min_words <= words <= cfg.max_words:
         reasons.append(f"length {words} words outside {cfg.min_words}-{cfg.max_words}")
-    full = f"{body}\n\n{signature(cfg)}"
+    full = f"{body}\n\n{signature(cfg)}" if cfg.sign_posts else body
     reasons += [f"output filter: {r}" for r in output_violations(full, secrets)]
 
     relevant = [c for c in claims if target is None or c["entry_id"] == target]

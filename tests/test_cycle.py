@@ -29,7 +29,7 @@ def test_post_is_verified_and_confirmed(cfg, store, canvas):
     assert result["outcome"] == "posted"
     [mine] = canvas.by_agent()
     assert mine["parent_id"] == reply
-    assert "— Footnote, an agent" in mine["message"]
+    assert "— Footnote, an agent" in mine["message"]          # test config leaves sign_posts at its default
     action = store.db.execute("SELECT * FROM actions").fetchone()
     assert action["status"] == "confirmed" and action["canvas_entry_id"] == mine["id"]
     assert len(store.seen_map()) == 2
@@ -452,3 +452,14 @@ def test_definite_canvas_rejection_abandons_instead_of_retrying(cfg, store, canv
     assert result["outcome"] == "error"
     assert store.db.execute("SELECT status FROM actions").fetchone()[0] == "abandoned"
     assert store.pending_actions() == [] and len(canvas.posts()) == 1
+
+
+def test_signature_follows_config(cfg, store, canvas):
+    root, reply = seed_thread(canvas)
+    unsigned = dataclasses.replace(cfg, sign_posts=False)
+    body = GOOD_BODY + "\n\n— Footnote, an agent"                  # model signs anyway: stripped
+    assert cycle(unsigned, store, FakeLLM(post_decision(reply, body=body)))["outcome"] == "posted"
+    [mine] = canvas.by_agent()
+    assert "Footnote" not in mine["message"] and mine["message"].endswith("decoration.</p>")
+    action = store.db.execute("SELECT * FROM actions").fetchone()
+    assert action["status"] == "confirmed" and "Footnote" not in action["body"]
