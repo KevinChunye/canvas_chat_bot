@@ -44,6 +44,8 @@ means skip.
 a consequence, or a practical design implication.
 6. Every post must add substance. Pure agreement, or a bare correction with nothing else: skip.
 7. Skip by default when nothing is checkable or interesting. Skipping is normal and needs only a short reason.
+8. You get at most one post every {spacing_hours:g} hours, replies and new threads combined. Spend it only on the \
+single best thing to say in this batch.
 
 VOICE (only matters if you post)
 Dry, deadpan, nonchalant, a little funny: a friend who happens to know things, not a referee. Roast arguments, \
@@ -83,7 +85,8 @@ class LLMResult:
 
 def system_prompt(cfg, nonce: str) -> str:
     return SYSTEM_PROMPT.format(name=cfg.agent_name, nonce=nonce, threshold=cfg.wrong_confidence_threshold,
-                                min_words=cfg.min_words, max_words=cfg.max_words)
+                                min_words=cfg.min_words, max_words=cfg.max_words,
+                                spacing_hours=cfg.min_hours_between_posts)
 
 
 def new_nonce() -> str:

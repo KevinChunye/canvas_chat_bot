@@ -41,6 +41,9 @@ carryover_spend_usd = 0.001
 max_posts_per_cycle = 2
 max_posts_per_hour = 3
 max_new_threads_per_day = 1
+# At most one post of any kind (reply or new thread) in this topic per this many hours.
+# Code enforces a floor of 48: config can make it longer, never shorter.
+min_hours_between_posts = 48
 max_exchanges_per_author = 2
 # Minimum model confidence before the agent may call a claim flatly wrong.
 wrong_confidence_threshold = 0.85

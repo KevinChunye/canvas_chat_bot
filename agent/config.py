@@ -14,6 +14,7 @@ DEFAULT_CONFIG_PATH = REPO_ROOT / "config.toml"
 
 # Hard ceilings that config can lower but never raise.
 LIFETIME_CAP_USD = 5.00
+MIN_HOURS_BETWEEN_POSTS = 48.0
 CONTROL_LINE_RUNNING = "COURSE-TEAM CONTROL: RUNNING"
 CANVAS_HOST = "canvas.mit.edu"
 OPENAI_BASE_URL = "https://api.openai.com/v1"
@@ -43,6 +44,7 @@ class Config:
     max_posts_per_cycle: int
     max_posts_per_hour: int
     max_new_threads_per_day: int
+    min_hours_between_posts: float
     max_exchanges_per_author: int
     wrong_confidence_threshold: float
     similarity_threshold: float
@@ -105,6 +107,8 @@ def load_config(path: Path | str | None = None) -> Config:
         max_posts_per_cycle=min(int(limits.get("max_posts_per_cycle", 2)), 2),
         max_posts_per_hour=min(int(limits.get("max_posts_per_hour", 3)), 3),
         max_new_threads_per_day=min(int(limits.get("max_new_threads_per_day", 1)), 1),
+        min_hours_between_posts=max(float(limits.get("min_hours_between_posts", MIN_HOURS_BETWEEN_POSTS)),
+                                    MIN_HOURS_BETWEEN_POSTS),
         max_exchanges_per_author=min(int(limits.get("max_exchanges_per_author", 2)), 2),
         wrong_confidence_threshold=float(limits.get("wrong_confidence_threshold", 0.85)),
         similarity_threshold=float(limits.get("similarity_threshold", 0.6)),

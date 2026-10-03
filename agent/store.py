@@ -278,6 +278,16 @@ class Store:
     def last_hour_cutoff(self) -> datetime:
         return self.clock() - timedelta(minutes=60)
 
+    def last_post_time(self, exclude: str | None = None) -> datetime | None:
+        """Latest post (or attempt) we know of: pending/confirmed actions, plus any abandoned one that did land."""
+        sql = ("SELECT MAX(COALESCE(last_attempt_at, created_at)) FROM actions "
+               "WHERE (status IN ('pending', 'confirmed') OR canvas_entry_id IS NOT NULL)")
+        args = []
+        if exclude:
+            sql += " AND intent_id != ?"
+            args.append(exclude)
+        return parse_time(self.db.execute(sql, args).fetchone()[0])
+
     def last_day_cutoff(self) -> datetime:
         return self.clock() - timedelta(hours=24)
 

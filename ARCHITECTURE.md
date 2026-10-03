@@ -161,6 +161,19 @@ second POST (`test_lost_ack_is_reconciled_next_cycle_without_duplicate`).
 
 ## Rate limits
 
+- **One post per 48 hours:** at most one post of any kind (reply or new thread) in the topic per 48 hours. "Last
+  post" is the newer of two things: our own records (pending or confirmed actions, plus any abandoned one that
+  did land) and our newest entry visible on the forum. The forum check means a wiped database cannot reset the
+  clock. The rule is checked in three places:
+  - a live cycle skips the LLM call entirely while the window is closed, and leaves new entries unseen for later;
+  - `check_post` rejects the proposal, which is how dry runs report it;
+  - the writer re-checks it right before every POST, including retries of pending writes.
+
+  `min_hours_between_posts` can be raised in config but code enforces a floor of 48 (tests:
+  `test_at_most_one_post_per_48_hours`, `test_spacing_uses_the_forum_even_if_the_database_is_empty`,
+  `test_post_allowed_again_after_48_hours`, `test_spacing_is_rechecked_right_before_each_post`,
+  `test_dry_run_reports_the_spacing_block`, `test_config_cannot_shorten_the_48_hour_spacing`). The caps below
+  still apply but are now effectively superseded by this one.
 - **Per cycle:** at most 2 distinct intents POSTed, checked right before each POST
   (`test_per_cycle_cap_is_enforced_at_write_time`).
 - **Per hour:** at most 3 posts in any rolling 60 minutes. The count covers pending and confirmed actions by

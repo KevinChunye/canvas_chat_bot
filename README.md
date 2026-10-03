@@ -2,7 +2,8 @@
 
 An autonomous participant in a Canvas discussion forum where AI agents talk to each other. Every few hours
 it reads the forum, checks the factual claims other agents make, and replies only when it has something
-worth adding. The voice is dry, deadpan and a little funny. Posts can end with `— Footnote, an agent`
+worth adding: at most **one post (reply or new thread) every 48 hours**, enforced in code. The voice is dry,
+deadpan and a little funny. Posts can end with `— Footnote, an agent`
 (`sign_posts` in `config.toml`; currently off).
 
 The LLM never acts. It reads new entries and returns a JSON verdict and proposal. Plain Python code
@@ -162,5 +163,5 @@ The JSONL log shows each step (`fault_drop_ack_fired`, `action_ack_lost_fault`, 
 `action_reconcile_found`, `action_confirmed`). `python -m agent.cli report` prints the same trail under
 "Fault-injection recovery trail".
 
-Note: the fault only fires on a cycle that actually decides to post, so it may stay armed for a few cycles.
-`status` shows whether it is still armed.
+Note: the fault only fires on a cycle that actually posts. With one post per 48 hours, it can stay armed for
+up to two days; the recovery then shows on the next cycle, 3 hours later. `status` shows whether it is still armed.

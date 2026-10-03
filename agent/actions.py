@@ -20,6 +20,16 @@ from .text import content_hash
 CLOCK_SKEW = timedelta(minutes=10)
 
 
+def spacing_block(last_post, now, min_hours: float) -> str | None:
+    """Reason a post is blocked by the minimum spacing between posts, or None."""
+    if last_post is None:
+        return None
+    next_allowed = last_post + timedelta(hours=min_hours)
+    if now < next_allowed:
+        return f"post spacing: last post {last_post:%Y-%m-%d %H:%M} UTC, next allowed after {next_allowed:%Y-%m-%d %H:%M} UTC"
+    return None
+
+
 class Writer:
     def __init__(self, canvas, store, cfg, self_id: int, cycle_id: str, log, sleep=time.sleep):
         self.canvas = canvas
@@ -30,6 +40,7 @@ class Writer:
         self.log = log
         self.sleep = sleep
         self.intents_posted = set()  # distinct intents POSTed in this cycle
+        self.last_forum_post = None  # newest entry of ours seen on the forum this cycle (set by the cycle)
 
     # ------------------------------------------------------------------ matching
 
@@ -101,7 +112,9 @@ class Writer:
             return "per-cycle post cap reached"
         if self.store.recent_posts(self.store.last_hour_cutoff(), exclude=intent_id) >= self.cfg.max_posts_per_hour:
             return "per-hour post cap reached"
-        return None
+        last = max((t for t in (self.store.last_post_time(exclude=intent_id), self.last_forum_post) if t),
+                   default=None)
+        return spacing_block(last, self.store.clock(), self.cfg.min_hours_between_posts)
 
     def execute(self, intent_id: str) -> str:
         """POST a pending action. Returns confirmed | gate_closed | capped | rejected | unverified | failed."""

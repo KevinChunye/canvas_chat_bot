@@ -6,7 +6,7 @@ import sys
 import time
 from dataclasses import dataclass
 
-from .actions import Writer
+from .actions import Writer, spacing_block
 from .budget import BudgetExhausted, BudgetRefused, Ledger
 from .canvas import Canvas, CanvasAuthError, LostAck
 from .config import Config, canvas_token, openai_key, secret_values
@@ -15,7 +15,7 @@ from .forum import (build_thread_blocks, exchanges_with_author, fetch_forum, fin
 from .llm import MalformedDecision, calibrate, call, new_nonce, openai_complete, parse_decision, system_prompt, \
     user_prompt
 from .log import CycleLog
-from .store import Store
+from .store import Store, parse_time
 from .text import content_hash, max_similarity, output_violations, scrub, to_html, truncate, word_count
 
 HALT_AFTER_FAILURES = 3
@@ -46,10 +46,22 @@ def strip_signature(body: str) -> str:
     return SIGNATURE_TAIL.sub("", body.strip()).strip()
 
 
+def last_own_post(store: Store, entries: dict, self_id: int):
+    """Newest post of ours, from our records or from the forum itself (covers a wiped database)."""
+    times = [parse_time(e["created_at"]) for e in entries.values() if e["user_id"] == self_id and e["created_at"]]
+    recorded = store.last_post_time()
+    if recorded:
+        times.append(recorded)
+    return max(times, default=None)
+
+
 def check_post(post: dict, claims: list[dict], entries: dict, self_id: int, store: Store, cfg: Config,
                secrets: list[str], threads_this_cycle: set) -> tuple[Plan | None, list[str]]:
     """Everything the model proposed is re-checked here. Any reason means skip."""
     reasons = []
+    spacing = spacing_block(last_own_post(store, entries, self_id), store.clock(), cfg.min_hours_between_posts)
+    if spacing:
+        reasons.append(spacing)
     target = post["target_entry_id"]
     root = None
     if target is None:
@@ -191,9 +203,15 @@ class Cycle:
         if not candidates:
             return self.finish("no_post", "nothing new")
 
+        self.writer.last_forum_post = max((parse_time(e["created_at"]) for e in entries.values()
+                                           if e["user_id"] == self_id and e["created_at"]), default=None)
         gate_open, line = self.canvas.control_gate()
         if not gate_open:
             return self.finish("no_post", f"control gate closed ({line[:60]}); evaluation deferred")
+        if not self.dry_run:
+            spacing = spacing_block(last_own_post(store, entries, self_id), store.clock(), cfg.min_hours_between_posts)
+            if spacing:
+                return self.finish("no_post", f"{spacing}; evaluation deferred")
         if not self.dry_run and store.recent_posts(store.last_hour_cutoff()) >= cfg.max_posts_per_hour:
             return self.finish("no_post", "per-hour post cap reached; evaluation deferred")
 

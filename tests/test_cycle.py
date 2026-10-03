@@ -10,6 +10,10 @@ from tests.conftest import (FAKE_CANVAS_KEY, FAKE_OPENAI_KEY, GOOD_BODY, OTHER_B
                             FakeLLM, no_sleep, post_decision, skip_decision)
 
 
+def no_spacing(cfg):
+    return dataclasses.replace(cfg, min_hours_between_posts=0)
+
+
 def cycle(cfg, store, llm, dry_run=False):
     return run_cycle(cfg, dry_run=dry_run, complete=llm, store=store, sleep=no_sleep, echo=False)
 
@@ -65,6 +69,7 @@ def test_own_posts_are_never_candidates(cfg, store, canvas):
 
 
 def test_never_replies_twice_to_the_same_entry(cfg, store, canvas):
+    cfg = no_spacing(cfg)                     # isolate this rule from the 48h spacing
     _, reply = seed_thread(canvas)
     cycle(cfg, store, FakeLLM(post_decision(reply)))
     canvas.add(200, "a new unrelated entry", minutes_ago=1)
@@ -180,6 +185,7 @@ def test_gate_paused_between_decision_and_write_blocks_the_write(cfg, store, can
 # --------------------------------------------------------------------------- caps
 
 def test_per_hour_cap_blocks_new_posts(cfg, store, canvas):
+    cfg = no_spacing(cfg)                     # isolate this rule from the 48h spacing
     _, reply = seed_thread(canvas)
     for i in range(3):
         intent = store.add_action("old", "reply", 9000 + i, 9000, f"body {i}", "<p>x</p>", f"h{i}")
@@ -191,6 +197,7 @@ def test_per_hour_cap_blocks_new_posts(cfg, store, canvas):
 
 
 def test_per_cycle_cap_is_enforced_at_write_time(cfg, store, canvas):
+    cfg = no_spacing(cfg)                     # isolate this rule from the 48h spacing
     from agent.actions import Writer
     from agent.canvas import Canvas
     root = canvas.add(200, "thread")
@@ -207,6 +214,7 @@ def test_per_cycle_cap_is_enforced_at_write_time(cfg, store, canvas):
 
 
 def test_one_new_thread_per_day(cfg, store, canvas):
+    cfg = no_spacing(cfg)                     # isolate this rule from the 48h spacing
     seed_thread(canvas)
     intent = store.add_action("old", "thread", None, None, OTHER_BODY, "<p>x</p>", "h")
     store.confirm_action(intent, 7000, "test")
@@ -215,6 +223,7 @@ def test_one_new_thread_per_day(cfg, store, canvas):
 
 
 def test_exchange_cap_with_same_author_in_a_chain(cfg, store, canvas):
+    cfg = no_spacing(cfg)                     # isolate this rule from the 48h spacing
     a = canvas.add(300, "claim one", minutes_ago=50)
     b = canvas.add(SELF_ID, "answer one", parent_id=a, minutes_ago=40)
     c = canvas.add(300, "claim two", parent_id=b, minutes_ago=30)
@@ -324,6 +333,7 @@ def test_confident_wrong_can_be_posted(cfg, store, canvas):
 
 
 def test_too_similar_to_previous_post_is_skipped(cfg, store, canvas):
+    cfg = no_spacing(cfg)                     # isolate this rule from the 48h spacing
     root, reply = seed_thread(canvas)
     cycle(cfg, store, FakeLLM(post_decision(reply)))
     canvas.add(200, "another take on the same thing", parent_id=root, minutes_ago=1)
@@ -435,6 +445,7 @@ def test_token_switching_users_halts(cfg, store, canvas):
 
 
 def test_one_reply_per_thread_per_cycle(cfg, store, canvas):
+    cfg = no_spacing(cfg)                     # isolate this rule from the 48h spacing
     root, reply = seed_thread(canvas)
     other = canvas.add(200, "a second reply in the same thread", parent_id=root, minutes_ago=100)
     body = OTHER_BODY + "\n\n— Footnote, an agent"
@@ -463,3 +474,61 @@ def test_signature_follows_config(cfg, store, canvas):
     assert "Footnote" not in mine["message"] and mine["message"].endswith("decoration.</p>")
     action = store.db.execute("SELECT * FROM actions").fetchone()
     assert action["status"] == "confirmed" and "Footnote" not in action["body"]
+
+
+# --------------------------------------------------------------------------- 48-hour spacing
+
+def test_at_most_one_post_per_48_hours(cfg, store, canvas):
+    root, reply = seed_thread(canvas)
+    assert cycle(cfg, store, FakeLLM(post_decision(reply)))["outcome"] == "posted"
+    canvas.add(200, "a fresh claim worth checking", parent_id=root, minutes_ago=0)
+    fresh = max(canvas.entries)
+    llm = FakeLLM(post_decision(fresh, body=OTHER_BODY))
+    result = cycle(cfg, store, llm)
+    assert result["outcome"] == "no_post" and result["summary"].startswith("post spacing")
+    assert llm.calls == [] and len(canvas.by_agent()) == 1        # no LLM spend, no second post
+    assert store.seen_map().get(fresh) is None                    # left for when the window reopens
+
+
+def test_spacing_uses_the_forum_even_if_the_database_is_empty(cfg, store, canvas):
+    root, _ = seed_thread(canvas)
+    canvas.add(SELF_ID, "an earlier post of ours", parent_id=root, minutes_ago=47 * 60)
+    canvas.add(200, "new entry", parent_id=root, minutes_ago=5)
+    llm = FakeLLM(post_decision(max(canvas.entries), body=OTHER_BODY))
+    assert cycle(cfg, store, llm)["summary"].startswith("post spacing") and canvas.posts() == []
+
+
+def test_post_allowed_again_after_48_hours(cfg, store, canvas):
+    root, _ = seed_thread(canvas)
+    canvas.add(SELF_ID, "an earlier post of ours", parent_id=root, minutes_ago=49 * 60)
+    target = canvas.add(200, "new entry", parent_id=root, minutes_ago=5)
+    assert cycle(cfg, store, FakeLLM(post_decision(target, body=OTHER_BODY)))["outcome"] == "posted"
+
+
+def test_spacing_is_rechecked_right_before_each_post(cfg, store, canvas):
+    from agent.actions import Writer
+    from agent.canvas import Canvas
+    root = canvas.add(200, "thread")
+    old = store.add_action("c0", "reply", 9000, 9000, "earlier", "<p>x</p>", "h0")
+    store.confirm_action(old, 8000, "test")                       # posted moments ago
+    client = Canvas(cfg.canvas_base_url, FAKE_CANVAS_KEY, cfg.course_id, cfg.forum_topic_id, sleep=no_sleep)
+    writer = Writer(client, store, cfg, SELF_ID, "c1", lambda *a, **k: None, sleep=no_sleep)
+    html = to_html(GOOD_BODY)
+    intent = store.add_action("c1", "reply", root, root, GOOD_BODY, html, content_hash(html))
+    assert writer.execute(intent) == "capped" and canvas.posts() == []
+
+
+def test_dry_run_reports_the_spacing_block(cfg, store, canvas):
+    root, reply = seed_thread(canvas)
+    canvas.add(SELF_ID, "an earlier post of ours", parent_id=root, minutes_ago=60)
+    result = cycle(cfg, store, FakeLLM(post_decision(reply)), dry_run=True)
+    assert result["outcome"] == "dry_run" and "post spacing" in result["summary"]
+
+
+def test_config_cannot_shorten_the_48_hour_spacing(tmp_path):
+    from agent.config import load_config
+    path = tmp_path / "c.toml"
+    path.write_text("[limits]\nmin_hours_between_posts = 1\n")
+    assert load_config(path).min_hours_between_posts == 48
+    path.write_text("[limits]\nmin_hours_between_posts = 72\n")
+    assert load_config(path).min_hours_between_posts == 72
