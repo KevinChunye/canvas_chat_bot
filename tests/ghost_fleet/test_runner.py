@@ -1,5 +1,6 @@
 """The live runner against a fake Canvas, through the real Canvas client."""
 
+import dataclasses
 import hashlib
 import json
 import threading
@@ -173,10 +174,11 @@ def test_lost_ack_is_found_without_a_second_post(cfg, store, canvas, offer):
 
 
 def test_failed_post_is_retried_next_run_never_duplicated(cfg, store, canvas, offer, clock):
-    canvas.post_modes = ["500", "500", "500"]
+    cfg = dataclasses.replace(cfg, max_post_attempts=2)
+    canvas.post_modes = ["500", "500"]
     assert turn(cfg, store)["outcome"] == "error"
     assert store.turn_row(1)["status"] == "pending" and posts_by_house(canvas, offer) == []
-    clock.advance(0.25)
+    clock.advance(1.25)                                       # once both attempts are out of the write window
     turn(cfg, store)                                          # reconciles: posts the pending turn, once
     assert store.turn_row(1)["status"] == "confirmed" and len(posts_by_house(canvas, offer)) == 1
     turn(cfg, store)
@@ -268,6 +270,16 @@ def test_post_offer_posts_once(cfg, store, canvas):
     assert len(canvas.posts()) == 1
 
 
+def test_post_offer_counts_our_recent_posts_in_the_topic(cfg, tmp_path, canvas):
+    store = Store(tmp_path / "fresh.db")                   # no local records, real time like the fake forum
+    canvas.add(SELF_ID, "posted by hand", minutes_ago=20)
+    canvas.add(SELF_ID, "another one", minutes_ago=5)
+    with pytest.raises(RuntimeError, match="capped"):
+        post_offer(cfg, store=store)
+    store.close()
+    assert canvas.posts() == []
+
+
 def test_turn_html_keeps_every_line_and_its_hash_survives_reformatting():
     body = "GHOST FLEET · TURN 2\nTHIS TURN\n\n   1️⃣2️⃣\nA  🌊🌊"
     out = to_html(body)
@@ -323,11 +335,11 @@ def http(monkeypatch, cfg):
     httpd.shutdown()
 
 
-def test_server_runs_a_turn_hourly_and_serves_the_spectator(http, cfg):
+def test_server_runs_every_ten_minutes_and_serves_the_spectator(http, cfg):
     base, started = http
     with urllib.request.urlopen(base + "/schedules") as resp:
         [entry] = json.loads(resp.read())
-    assert entry["cron"] == "0 * * * *" and entry["prompt"] == "run-turn"
+    assert entry["cron"] == "*/10 * * * *" and entry["prompt"] == "run-turn"
     with urllib.request.urlopen(base + "/") as resp:
         assert b"Ghost Fleet" in resp.read()
     with pytest.raises(urllib.error.HTTPError):

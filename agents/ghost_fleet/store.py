@@ -283,12 +283,10 @@ class Store:
     def post_age(self, row) -> timedelta:
         return self.clock() - parse_time(row["created_at"])
 
-    def post_times(self, since: datetime, exclude: str | None = None) -> list[datetime]:
-        """When each post that counts against the write limit was created: pending, confirmed, or abandoned
-        after it landed."""
-        rows = self.db.execute(
-            "SELECT created_at FROM outbox WHERE (status IN ('pending', 'confirmed') OR canvas_entry_id IS NOT NULL) "
-            "AND created_at > ? AND key != ?", (iso(since), exclude or ""))
+    def attempt_times(self, since: datetime) -> list[datetime]:
+        """When each POST attempt after `since` was made, whatever its outcome: every attempt counts against the
+        write limit, retries included."""
+        rows = self.db.execute("SELECT at FROM events WHERE event = 'attempt' AND at > ?", (iso(since),))
         return [parse_time(r[0]) for r in rows]
 
     # ------------------------------------------------------------------ TURN posts
@@ -338,6 +336,10 @@ class Store:
 
     def discoveries(self) -> list[sqlite3.Row]:
         return self.db.execute("SELECT * FROM discoveries ORDER BY id").fetchall()
+
+    def last_discovery(self, game_id: int) -> sqlite3.Row | None:
+        return self.db.execute("SELECT * FROM discoveries WHERE game_id = ? ORDER BY id DESC LIMIT 1",
+                               (game_id,)).fetchone()
 
     def offer_id(self) -> int | None:
         value = self.get_state("offer_entry_id")

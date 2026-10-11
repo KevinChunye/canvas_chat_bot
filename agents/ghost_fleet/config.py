@@ -11,9 +11,13 @@ from canvas_core.env import CANVAS_HOST
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent / "config.toml"
 
-# Hard ceilings that config can lower but never raise.
-MAX_POSTS_PER_HOUR = 2
-MAX_POSTS_PER_DAY = 30
+# The course forum allows at most three write attempts per rolling hour per student, across all of the course's
+# discussions, retries included. These are ceilings that config can lower but never raise; the defaults leave
+# room for the student's own posts elsewhere in the course.
+MAX_WRITES_PER_HOUR = 3
+MAX_WRITES_PER_DAY = 48
+DEFAULT_WRITES_PER_HOUR = 2
+DEFAULT_WRITES_PER_DAY = 36
 OFFER_PATH = Path(__file__).resolve().parent / "offer.txt"
 SPECTATOR_PATH = Path(__file__).resolve().parent / "spectator.html"
 
@@ -29,8 +33,8 @@ class Config:
     season_start: datetime
     season_end: datetime
 
-    max_posts_per_hour: int
-    max_posts_per_day: int
+    max_writes_per_hour: int
+    max_writes_per_day: int
     pending_max_age_hours: float
     max_post_attempts: int
 
@@ -67,6 +71,11 @@ def _when(value: str) -> datetime:
     return dt
 
 
+def _capped(section: dict, key: str, old_key: str, default: int, ceiling: int) -> int:
+    """A limit from config (or its older name), never above the ceiling."""
+    return min(int(section.get(key, section.get(old_key, default))), ceiling)
+
+
 def load_config(path: Path | str | None = None) -> Config:
     path = Path(path) if path else DEFAULT_CONFIG_PATH
     with open(path, "rb") as f:
@@ -89,8 +98,10 @@ def load_config(path: Path | str | None = None) -> Config:
         offer_entry_id=game.get("offer_entry_id") or None,
         season_start=_when(game.get("season_start", "2026-10-12T09:00:00-04:00")),
         season_end=_when(game.get("season_end", "2026-10-14T20:00:00-04:00")),
-        max_posts_per_hour=min(int(limits.get("max_posts_per_hour", MAX_POSTS_PER_HOUR)), MAX_POSTS_PER_HOUR),
-        max_posts_per_day=min(int(limits.get("max_posts_per_day", MAX_POSTS_PER_DAY)), MAX_POSTS_PER_DAY),
+        max_writes_per_hour=_capped(limits, "max_writes_per_hour", "max_posts_per_hour", DEFAULT_WRITES_PER_HOUR,
+                                    MAX_WRITES_PER_HOUR),
+        max_writes_per_day=_capped(limits, "max_writes_per_day", "max_posts_per_day", DEFAULT_WRITES_PER_DAY,
+                                   MAX_WRITES_PER_DAY),
         pending_max_age_hours=float(limits.get("pending_max_age_hours", 2)),
         max_post_attempts=int(limits.get("max_post_attempts", 3)),
         hire_enabled=bool(hire.get("enabled", True)),

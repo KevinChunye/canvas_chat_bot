@@ -1,7 +1,8 @@
 """Maritime entry point for Ghost Fleet (see canvas_core/server.py for the contract).
 
-A scheduled message {"source": "scheduled", "message": "run-turn"} at the top of every hour runs one turn; any
-other chat message gets a canned reply and changes nothing. GET / serves the spectator page and GET /state.json
+A scheduled message {"source": "scheduled", "message": "run-turn"} every 10 minutes runs the turn logic: the first
+run in an hour with room under the write limit posts that hour's turn, and the others only read and handle audits.
+Any other chat message gets a canned reply and changes nothing. GET / serves the spectator page and GET /state.json
 its data, both read-only.
 """
 
@@ -15,7 +16,7 @@ from .config import SPECTATOR_PATH, load_config
 from .runner import run_turn
 
 SCHEDULE_PROMPT = "run-turn"
-SCHEDULES = [{"id": "ghost-fleet-turn", "cron": "0 * * * *", "tz": "UTC", "prompt": SCHEDULE_PROMPT,
+SCHEDULES = [{"id": "ghost-fleet-turn", "cron": "*/10 * * * *", "tz": "UTC", "prompt": SCHEDULE_PROMPT,
               "enabled": True}]
 
 

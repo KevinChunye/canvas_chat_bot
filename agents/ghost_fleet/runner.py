@@ -2,8 +2,10 @@
 
 The turn: read new replies under the offer, resolve them with the engine, commit, post one TURN reply under the
 offer, and verify it. A turn is one hour slot of the season (turn 1 starts at season_start). At most one TURN post
-per slot, and a slot with no new volleys posts nothing. A game's commitment is always posted before any volley
-resolves against it, and the first run after season_end reveals the unfinished game.
+per slot, and a slot with no new volleys posts nothing. Runs come every few minutes: the first run inside a slot
+with room under the write limit posts its turn, and later runs in that slot only handle audits. A game's commitment
+is always posted before any volley resolves against it, and the first run after season_end reveals the unfinished
+game.
 
 The hire: settle open audit requests (check the provider's reply, or expire it), then ask at most one new provider
 to audit a finished game (see hire.py).
@@ -38,6 +40,8 @@ from .store import Store
 
 HALT_AFTER_FAILURES = 3
 CLOCK_SKEW = timedelta(minutes=10)
+STRIKES = 2                          # failed audits, none accepted: that provider is not asked again
+RESCAN_AFTER = timedelta(hours=1)    # after a scan finds no suitable provider
 
 
 def turn_of(cfg: Config, when: datetime) -> int:
@@ -92,20 +96,25 @@ def display_record(record: dict, name) -> dict:
     return out
 
 
-def write_block(cfg: Config, store: Store, forum_times: list[datetime], exclude: str | None = None) -> str | None:
-    """The forum's write limit, counted over every kind of post: at most max_posts_per_hour in one hour slot (the
-    slots turns use) and max_posts_per_day in any 24 hours. Our own records and our entries seen on the forum are
-    both counted, so a wiped database cannot reset the limit. Forum timestamps get CLOCK_SKEW of slack, and
-    anything further in our future is not trusted as a count."""
+def write_block(cfg: Config, store: Store, forum_times: list[datetime]) -> str | None:
+    """The course's write limit: at most max_writes_per_hour write attempts in any rolling hour and
+    max_writes_per_day in any 24 hours. Every POST attempt counts, whatever its outcome (retries too), and so does
+    every entry of ours seen in the topic, so neither a lost acknowledgement nor a wiped database can reset the
+    count. Forum timestamps get CLOCK_SKEW of slack, and anything further in our future is not trusted as a count."""
     now = store.clock()
-    slot_start = turn_time(cfg, turn_of(cfg, now)) - timedelta(microseconds=1)
-    for since, cap, label in ((slot_start, cfg.max_posts_per_hour, "this hour"),
-                              (now - timedelta(days=1), cfg.max_posts_per_day, "the last 24 hours")):
+    for window, cap, label in ((timedelta(hours=1), cfg.max_writes_per_hour, "the last hour"),
+                               (timedelta(days=1), cfg.max_writes_per_day, "the last 24 hours")):
+        since = now - window
         seen = sum(1 for t in forum_times if since < t <= now + CLOCK_SKEW)
-        count = max(len(store.post_times(since, exclude)), seen)
+        count = max(len(store.attempt_times(since)), seen)
         if count >= cap:
-            return f"write limit: {count} posts in {label} (max {cap})"
+            return f"write limit: {count} writes in {label} (max {cap})"
     return None
+
+
+def own_post_times(entries: dict, self_id: int) -> list[datetime]:
+    """When each of our entries in the topic was posted: these count against the write limit too."""
+    return [parse_time(e["created_at"]) for e in entries.values() if e["user_id"] == self_id and e["created_at"]]
 
 
 @dataclass
@@ -209,8 +218,7 @@ class TurnRun:
         if not gate_open:
             return self.finish("idle", f"control gate closed ({line[:60]}); volleys and audits wait")
         self.entries = fetch_forum(self.canvas, log)[0]
-        self.poster.forum_times = [parse_time(e["created_at"]) for e in self.entries.values()
-                                   if e["user_id"] == self_id and e["created_at"]]
+        self.poster.forum_times = own_post_times(self.entries, self_id)
 
         # Replies to audit requests are settled first (reads only), so this hour's TURN post already carries
         # any audit accepted now; new requests go out after the TURN post.
@@ -442,26 +450,37 @@ class TurnRun:
                 return g["id"]
         return None
 
-    def track_record(self) -> dict[int, int]:
-        record: dict[int, int] = {}
+    def track_record(self) -> tuple[dict[int, int], set[int]]:
+        """Accepted minus failed audits per provider, and the providers not to ask again: STRIKES failed audits
+        (rejected or expired) and none accepted."""
+        accepted: dict[int, int] = {}
+        failed: dict[int, int] = {}
         for h in self.store.hires():
-            if h["status"] in ("accepted", "rejected", "expired"):
-                record[h["provider_user_id"]] = record.get(h["provider_user_id"], 0) + \
-                    (1 if h["status"] == "accepted" else -1)
-        return record
+            if h["status"] == "accepted":
+                accepted[h["provider_user_id"]] = accepted.get(h["provider_user_id"], 0) + 1
+            elif h["status"] in ("rejected", "expired"):
+                failed[h["provider_user_id"]] = failed.get(h["provider_user_id"], 0) + 1
+        record = {u: accepted.get(u, 0) - failed.get(u, 0) for u in accepted.keys() | failed.keys()}
+        barred = {u for u, n in failed.items() if n >= STRIKES and not accepted.get(u)}
+        return record, barred
 
-    def request_audit(self, game_id: int, self_id: int) -> tuple[str, bool]:
+    def request_audit(self, game_id: int, self_id: int) -> tuple[str | None, bool]:
         cfg, store = self.cfg, self.store
         blocked = self.poster.blocked()
         if blocked:
             return f"audit request for game {game_id} waits: {blocked}", False
+        last = store.last_discovery(game_id)
+        if last is not None and last["chosen_entry_id"] is None and \
+                store.clock() - parse_time(last["at"]) < RESCAN_AFTER:
+            return None, False                       # nothing suitable a moment ago; scan again next hour
         tried = {h["provider_user_id"] for h in store.hires(game_id)}
-        offers_seen, candidates = hire.discover(self.entries, self_id, cfg.hire_min_score, tried, self.track_record())
+        offers_seen, candidates = hire.discover(self.entries, self_id, cfg.hire_min_score, tried,
+                                                *self.track_record())
         chosen = candidates[0] if candidates and candidates[0]["suitable"] else None
         store.add_discovery(self.run_id, game_id, offers_seen, candidates, chosen["entry_id"] if chosen else None)
         store.add_event(f"game:{game_id}", self.run_id, "discovery",
                         {"offers": offers_seen, "chosen": chosen["entry_id"] if chosen else None,
-                         "top": [[c["entry_id"], c["score"], c["suitable"]] for c in candidates[:3]]})
+                         "top": [[c["entry_id"], c["score"], c["reason"]] for c in candidates[:3]]})
         self.log("discovery", game=game_id, offers_seen=offers_seen, candidates=candidates[:5],
                  chosen=chosen["entry_id"] if chosen else None)
         if chosen is None:
@@ -495,7 +514,7 @@ class TurnRun:
     def discovery_preview(self, self_id: int) -> str:
         """Dry runs: which offer would be hired, without writing anything."""
         offers_seen, candidates = hire.discover(self.entries, self_id, self.cfg.hire_min_score, set(),
-                                                self.track_record())
+                                                *self.track_record())
         self.result["discovery"] = candidates
         best = candidates[0] if candidates and candidates[0]["suitable"] else None
         if best is None:
@@ -505,8 +524,8 @@ class TurnRun:
 
 
 class Poster:
-    """POST a committed outbox row exactly once: check the write limit right before, verify by re-fetching, and
-    after an unknown outcome look for the post (by its header line) before ever posting again."""
+    """POST a committed outbox row exactly once: check the write limit right before every attempt, verify by
+    re-fetching, and after an unknown outcome look for the post (by its header line) before ever posting again."""
 
     def __init__(self, canvas, store: Store, cfg: Config, self_id: int, run_id: str, log, sleep=time.sleep):
         self.canvas = canvas
@@ -518,8 +537,8 @@ class Poster:
         self.sleep = sleep
         self.forum_times: list[datetime] = []
 
-    def blocked(self, exclude: str | None = None) -> str | None:
-        return write_block(self.cfg, self.store, self.forum_times, exclude)
+    def blocked(self) -> str | None:
+        return write_block(self.cfg, self.store, self.forum_times)
 
     def _event(self, key: str, event: str, **detail) -> None:
         self.store.add_event(key, self.run_id, event, detail)
@@ -557,7 +576,7 @@ class Poster:
         """Returns confirmed | gate_closed | capped | rejected | unverified | failed."""
         post = self.store.post(key)
         for attempt in range(1, self.cfg.max_post_attempts + 1):
-            blocked = self.blocked(exclude=key)
+            blocked = self.blocked()
             if blocked:
                 self._event(key, "capped", reason=blocked)
                 return "capped"
@@ -702,7 +721,9 @@ def post_offer(cfg: Config, *, canvas=None, store: Store) -> int:
         raise RuntimeError(f"offer.txt fails the post filter: {violations}")
     canvas = canvas or Canvas(cfg.canvas_base_url, canvas_token(), cfg.course_id, cfg.forum_topic_id,
                               timeout=cfg.canvas_timeout)
-    poster = Poster(canvas, store, cfg, int(canvas.self_profile()["id"]), "post-offer", lambda *a, **k: None)
+    self_id = int(canvas.self_profile()["id"])
+    poster = Poster(canvas, store, cfg, self_id, "post-offer", lambda *a, **k: None)
+    poster.forum_times = own_post_times(fetch_forum(canvas, lambda *a, **k: None)[0], self_id)
     if store.post("offer") is None:
         store.add_post("offer", "offer", None, body.splitlines()[0], body, to_html(body))
         store.db.commit()

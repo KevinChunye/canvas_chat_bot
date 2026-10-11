@@ -7,7 +7,7 @@ import pytest
 
 from agents.ghost_fleet import engine, hire
 from agents.ghost_fleet.config import load_config
-from agents.ghost_fleet.runner import rebuild
+from agents.ghost_fleet.runner import TurnRun, rebuild, write_block
 from canvas_core.text import strip_html
 from tests.conftest import SELF_ID
 from tests.ghost_fleet.conftest import fire, turn
@@ -151,10 +151,14 @@ def test_expired_requests_move_on_and_stop_at_the_provider_limit(cfg, store, can
 
 # --------------------------------------------------------------------------- the write limit
 
+def limited(tmp_path, cfg, limits):
+    path = tmp_path / "limited.toml"
+    path.write_text(cfg.config_path.read_text() + "\n[limits]\n" + limits + "\n")
+    return load_config(path)
+
+
 def test_write_limit_defers_the_audit_request_to_a_later_hour(tmp_path, cfg, store, canvas, offer, clock):
-    strict = tmp_path / "strict.toml"
-    strict.write_text(cfg.config_path.read_text() + "\n[limits]\nmax_posts_per_hour = 1\n")
-    cfg = load_config(strict)
+    cfg = limited(tmp_path, cfg, "max_writes_per_hour = 1")
     ledger = offer_post(canvas, LEDGER, LEDGER_OFFER)
     result = finish_game_one(cfg, store, canvas, offer, clock)
     assert result["outcome"] == "posted" and "waits: write limit" in result["summary"]
@@ -164,9 +168,7 @@ def test_write_limit_defers_the_audit_request_to_a_later_hour(tmp_path, cfg, sto
 
 
 def test_write_limit_holds_volleys_until_there_is_room(tmp_path, cfg, store, canvas, offer, clock):
-    strict = tmp_path / "strict.toml"
-    strict.write_text(cfg.config_path.read_text() + "\n[limits]\nmax_posts_per_day = 2\n")
-    cfg = load_config(strict)
+    cfg = limited(tmp_path, cfg, "max_writes_per_day = 2")
     assert turn(cfg, store)["outcome"] == "posted"
     clock.advance()
     fire(canvas, offer, 201, "FIRE A1 A2")
@@ -179,11 +181,60 @@ def test_write_limit_holds_volleys_until_there_is_room(tmp_path, cfg, store, can
     assert turn(cfg, store)["outcome"] == "posted" and waiting in store.known_entry_ids()
 
 
+def test_every_attempt_counts_including_retries(cfg, store, canvas, offer, clock):
+    canvas.post_modes = ["500", "500"]          # two attempts fail before anything lands
+    result = turn(cfg, store)
+    assert "stays pending (capped)" in result["summary"] and len(canvas.posts()) == 2
+    clock.advance(0.5)
+    turn(cfg, store)                            # same hour: the pending post waits, nothing is attempted
+    assert len(canvas.posts()) == 2 and store.post("turn:1")["status"] == "pending"
+    clock.advance(0.6)
+    turn(cfg, store)                            # the first attempts are over an hour old: the post goes out once
+    assert len(canvas.posts()) == 3 and store.post("turn:1")["status"] == "confirmed"
+    assert len(house_posts_under(canvas, offer)) == 1
+
+
+def test_the_hour_is_rolling_not_a_clock_hour(cfg, store, clock):
+    store.add_event("turn:1", "r1", "attempt")
+    clock.advance(50 / 60)
+    store.add_event("hire:x", "r1", "attempt")
+    clock.advance(15 / 60)                      # a new turn slot, but only 15 minutes after the last write
+    assert write_block(cfg, store, []) is None  # one attempt in the last hour
+    store.add_event("turn:2", "r2", "attempt")
+    assert write_block(cfg, store, []) == "write limit: 2 writes in the last hour (max 2)"
+    clock.advance(50 / 60)
+    assert write_block(cfg, store, []) is None
+
+
+def test_our_entries_on_the_forum_count_even_without_local_records(cfg, store, clock):
+    now = clock()
+    assert write_block(cfg, store, [now - timedelta(minutes=10), now - timedelta(minutes=40)]) is not None
+    assert write_block(cfg, store, [now - timedelta(minutes=61), now - timedelta(minutes=90)]) is None
+    assert write_block(cfg, store, [now + timedelta(hours=3)] * 2) is None     # not trusted from the future
+
+
+def test_a_turn_blocked_at_the_top_of_the_hour_is_posted_by_a_later_run(tmp_path, cfg, store, canvas, offer, clock,
+                                                                         season_start):
+    cfg = limited(tmp_path, cfg, "max_writes_per_hour = 1")
+    assert turn(cfg, store)["outcome"] == "posted"                          # opening post, one minute in
+    fire(canvas, offer, 201, "FIRE A1 A2")
+    clock.at = season_start + timedelta(minutes=60, seconds=30)             # turn 2, under an hour since then
+    assert "write limit" in turn(cfg, store)["summary"]
+    clock.advance(10 / 60)                                                  # the next run, same slot
+    result = turn(cfg, store)
+    assert result["outcome"] == "posted" and result["turn"] == 2
+
+
 def test_config_can_lower_but_never_raise_the_write_limit(tmp_path):
     path = tmp_path / "c.toml"
-    path.write_text("[limits]\nmax_posts_per_hour = 9\nmax_posts_per_day = 500\n")
+    path.write_text("[limits]\nmax_writes_per_hour = 9\nmax_writes_per_day = 500\n")
     cfg = load_config(path)
-    assert (cfg.max_posts_per_hour, cfg.max_posts_per_day) == (2, 30)
+    assert (cfg.max_writes_per_hour, cfg.max_writes_per_day) == (3, 48)     # the course allows 3 per hour
+    path.write_text("[limits]\nmax_posts_per_hour = 1\n")                  # the older key still works
+    assert load_config(path).max_writes_per_hour == 1
+    path.write_text("")
+    cfg = load_config(path)
+    assert (cfg.max_writes_per_hour, cfg.max_writes_per_day) == (2, 36)
 
 
 def test_a_request_whose_acknowledgement_is_lost_is_found_not_reposted(cfg, store, canvas, offer, clock):
@@ -253,6 +304,59 @@ def test_dry_run_previews_discovery_without_writing(cfg, store, canvas, offer, c
     result = turn(cfg, store, dry_run=True)
     assert f"2 offers read, best is entry {ledger} (score 6" in result["summary"]
     assert canvas.posts() == [] and store.discoveries() == []
+
+
+# Offers worded the way real ones in the forum are: what a service will not do, and when it reads the forum, are
+# not capabilities.
+RECORDS_OFFER = ("Service offer: synthetic health-record lookups that respect each person's sharing choices\n"
+                 "What it does: answers questions about a small network of synthetic patients.\n"
+                 "What it will not do: single anyone out, give medical advice, or run code you send.\n"
+                 "Availability: the agent checks this forum about every three hours until Wednesday.")
+RATES_OFFER = ("SERVICE OFFER - Rate Desk (official exchange rates, sourced public figures, trend math)\n"
+               "What I return: the number, every rate and source behind it, and a short Python snippet that "
+               "reproduces every figure from your raw input.\n"
+               "Availability: I check this thread every hour until Sunday.\n"
+               "Limits: no financial advice; I do not execute code you send me; I do not fetch arbitrary URLs.")
+DILIGENCE_OFFER = ("SERVICE OFFER: Research Candidate Diligence. What it does: I evaluate whether a proposed person "
+                   "is relevant to your research question. What I return: a relevance score and public evidence.")
+
+
+def test_what_an_offer_will_not_do_and_its_availability_are_not_capabilities():
+    assert hire.score_offer(RECORDS_OFFER) == (0, [])
+    assert hire.score_offer(RATES_OFFER) == (2, ["computation"])
+    assert hire.score_offer(DILIGENCE_OFFER) == (0, [])
+    assert hire.score_offer("SERVICE OFFER: I won't hash anything. I can't compute either.") == (0, [])
+    assert hire.score_offer(LEDGER_OFFER + "\nAvailability: I check this thread every hour.")[0] == 6
+
+
+def test_a_provider_with_two_failed_audits_and_none_accepted_is_not_asked_again(cfg, store, canvas, offer):
+    expected = {"proof": "a" * 64, "commit_matches": True, "rows": [0] * 10, "mismatches": []}
+    for token, game, user, status in (("t1", 1, LEDGER, "rejected"), ("t2", 2, LEDGER, "expired"),
+                                      ("t3", 1, CHECKSUM, "expired"), ("t4", 2, CHECKSUM, "accepted"),
+                                      ("t5", 3, CHECKSUM, "rejected"), ("t6", 3, POET, "rejected")):
+        store.add_hire(token, game, 9000 + user, user, 4, ["hashing"], expected, store.clock())
+        store.settle_hire(token, status)
+    record, barred = TurnRun(cfg, store, None, None, "r", False, None).track_record()
+    assert barred == {LEDGER} and record == {LEDGER: -2, CHECKSUM: -1, POET: -1}   # one accepted audit keeps it
+
+    ledger, checksum = offer_post(canvas, LEDGER, LEDGER_OFFER), offer_post(canvas, CHECKSUM, CHECKSUM_OFFER)
+    entries = {e["id"]: dict(e, root_id=e["id"], deleted=False, text=strip_html(e["message"]))
+               for e in canvas.entries.values() if e["parent_id"] is None}
+    _, candidates = hire.discover(entries, SELF_ID, cfg.hire_min_score, set(), record, barred)
+    by_id = {c["entry_id"]: c for c in candidates}
+    assert candidates[0]["entry_id"] == checksum and by_id[checksum]["reason"] == "suitable"
+    assert not by_id[ledger]["suitable"] and by_id[ledger]["reason"] == "failed audits, none accepted"
+
+
+def test_a_scan_that_found_nobody_waits_an_hour_before_the_next(cfg, store, canvas, offer, clock):
+    offer_post(canvas, POET, POET_OFFER)
+    finish_game_one(cfg, store, canvas, offer, clock)
+    clock.advance(0.5)
+    turn(cfg, store)
+    assert len(store.discoveries()) == 1
+    clock.advance(0.5)
+    turn(cfg, store)
+    assert len(store.discoveries()) == 2
 
 
 def test_a_computation_only_provider_qualifies_but_a_fact_checker_does_not(cfg):

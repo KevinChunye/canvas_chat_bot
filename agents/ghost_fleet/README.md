@@ -31,27 +31,37 @@ python -m http.server -d state/ghost_fleet_sandbox 8000    # spectator: http://l
 
 ### 2. Against the real forum, read-only
 
+`config.toml` already points at the course's agent services forum (course 40577, topic 449948).
+
 ```bash
 export CANVAS_API_KEY=...
-# Read-only lookup that writes the course and topic ids into this agent's config.
-# Pick a topic the fact-check agent does not post in: both post as your account.
-python scripts/discover.py "<forum topic title>" --config agents/ghost_fleet/config.toml
 python -m agents.ghost_fleet.cli dry-run                                 # the TURN post it would make right now
 python -m agents.ghost_fleet.cli dry-run --at 2026-10-12T10:00-04:00     # ...or at any time you pick
 ```
 
 A dry run reads the real thread, prints the post, and names the offer it would hire as auditor and why. It writes
-nothing to Canvas, and runs on a throwaway copy of the database.
+nothing to Canvas, and runs on a throwaway copy of the database. The Canvas client in a dry run cannot POST at all.
 
 ### 3. Live
 
-1. **Write limit.** Set `max_posts_per_hour` and `max_posts_per_day` in `config.toml` to the forum's rules.
-   Code never allows more than 2 per hour slot and 30 per day.
+1. **Write limit.** The course allows at most 3 write attempts per rolling hour per student, across all of its
+   discussions, and retries count. The agent counts every POST attempt it makes (offer, TURN, audit request,
+   retry) plus every entry of yours it sees in the topic, and stops at `max_writes_per_hour` (2) in any rolling
+   hour and `max_writes_per_day` (36) in any 24 hours. Code never allows more than 3 and 48. The default of 2
+   leaves room for one post of your own per hour anywhere in the course. The agent cannot see your posts in other
+   discussions, so while it runs, post by hand at most once an hour, and keep any other agent of yours (such as
+   the fact-check agent) stopped or posting rarely.
 2. **Offer.** Run `post-offer` to post `offer.txt` as a new thread. If you already posted it by hand, run
    `set-offer <entry id>` instead (the id is the number after `entry_id=` in the entry's link). Then put that id
    in `config.toml` as `offer_entry_id` and commit it, so every environment knows the thread.
-3. **Turns.** Run `run-turn` once an hour. The first run inside the season posts the opening TURN with game 1's
-   commitment. After that, each hour with new volleys gets one TURN reply, and quiet hours post nothing.
+3. **Turns.** Run `run-turn` every 10 minutes. The first run inside the season posts the opening TURN with game
+   1's commitment. After that, each hour with new volleys gets one TURN reply, and quiet hours post nothing. When
+   the rolling hour is full at the top of the hour (say a TURN and an audit request went out last hour), a later
+   run in the same hour posts the turn. Runs that have nothing to post only read. On a Mac:
+
+   ```bash
+   caffeinate -i bash -c 'while true; do .venv/bin/python -m agents.ghost_fleet.cli run-turn; sleep 600; done'
+   ```
 4. **One place only.** Live turns must run from a single machine or container, because the game lives in that
    database (`state/ghost_fleet/` locally, `/data` in a container). Two runners would play two different games.
 5. **Write-up.** When the season is over, run `writeup` where the live database is (on Maritime, with
@@ -66,7 +76,7 @@ maritime create ghost_fleet --framework custom \
   --repo https://github.com/KevinChunye/canvas_chat_bot --branch main --idle 900
 # In the agent's Settings add CANVAS_API_KEY, and AGENT=ghost_fleet (as a secret if there is no variables tab)
 maritime restart ghost_fleet
-maritime triggers list ghost_fleet          # expect one hourly trigger, synced from /schedules
+maritime triggers list ghost_fleet          # expect one trigger every 10 minutes, synced from /schedules
 maritime exec ghost_fleet -- env AGENT_DATA_DIR=/data python -m agents.ghost_fleet.cli status
 ```
 
@@ -75,7 +85,7 @@ The same container serves the spectator page at `/` and its data at `/state.json
 Without Maritime, use cron:
 
 ```
-0 * * * * set -a; . /etc/ghost_fleet.env; set +a; cd /opt/canvas_chat_bot && python3 -m agents.ghost_fleet.cli run-turn
+*/10 * * * * set -a; . /etc/ghost_fleet.env; set +a; cd /opt/canvas_chat_bot && python3 -m agents.ghost_fleet.cli run-turn
 ```
 
 `status` shows the offer, games, audits, pending posts and recent runs. Three failed runs in a row, a 401/403, or a
@@ -84,8 +94,9 @@ token that now belongs to another user set a halt; fix the cause, then run `unha
 ## How a run works
 
 1. Settle every pending post: find it by its header line, re-verify it, or give up on it once it is too old,
-   before anything new is posted.
-2. Read the control line. Unless it says RUNNING, nothing is read or written.
+   before anything new is posted. A retry is a write attempt like any other and waits for room under the limit.
+2. Read the control line. Unless it says RUNNING, the run stops there. `create_entry` reads it again right
+   before every POST.
 3. Read the topic once.
 4. Settle open audit requests: check the provider's first reply to the request, or expire the request after its
    deadline.
@@ -101,9 +112,12 @@ layout no longer matches the published commitment.
 ## Hiring an auditor
 
 - **Discovery.** Every top-level offer in the topic except ours is scored on the capabilities the audit needs:
-  hashing 3, computation 2, verification 1. Offers under `min_score` (2) are unsuitable. Suitable offers rank by
-  score, then track record (accepted minus failed audits), then age. Nothing is hard-coded, and every scan is
-  stored with each candidate's score, so a season with no suitable peer still shows its attempts.
+  hashing 3, computation 2, verification 1. Only sentences that offer something count: "What it will not do: ...
+  run code you send" is not computation, and "I check this forum every three hours" is not verification. Offers
+  under `min_score` (2) are unsuitable, and so is a provider with two failed audits and none accepted. Suitable
+  offers rank by score, then track record (accepted minus failed audits), then age. Nothing is hard-coded, and
+  every scan is stored with each candidate's score and why it was passed over, so a season with no suitable peer
+  still shows its attempts. After a scan that finds nobody, the next one waits an hour.
 - **Request.** One reply to the chosen offer, self-contained:
   - inputs: the commitment, the revealed layout and every shot;
   - the expected result: five fixed lines;
