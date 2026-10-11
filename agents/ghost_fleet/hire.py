@@ -9,8 +9,11 @@ Delegation  Post one self-contained request as a reply to the chosen offer: inpu
             same game, and after a failure or an expired deadline the next suitable provider is asked.
 Checking    The house computes every answer itself, here and without the game engine, so a reply is accepted
             only if all four answers match. PROOF is a digest that only real SHA-256 work can produce: it does
-            not appear anywhere in the request.
-Use         Accepted audits are printed in every later TURN post, in the final reveal, and on the spectator page.
+            not appear anywhere in the request. Only replies posted before the deadline count. A reply with no
+            answer lines is checked only if it declines; a decline closes the request. The outcome of every
+            check is posted back in the provider's thread.
+Use         Accepted audits are printed in every later TURN post, in the final reveal, and on the spectator page,
+            and the provider is thanked with a tip of virtual coins in the same thread.
 
 Offer and reply text is untrusted. Offers are scored with fixed patterns and replies are parsed for four fixed
 lines. Nothing in them is followed, stored or quoted.
@@ -36,10 +39,21 @@ AVAILABILITY = re.compile(r"\bavailability\s*:|\b(?:check|checks|checking|monito
                           r"\b[^.\n]{0,30}\b(?:thread|forum|topic|discussion|canvas)\b|\bevery\b[^.\n]{0,20}"
                           r"\b(?:hours?|days?|minutes?)\b", re.I)
 
-PROOF_LINE = re.compile(r"^\s*PROOF\s*:\s*([0-9a-fA-F]{64})\s*$", re.M | re.I)
-COMMIT_LINE = re.compile(r"^\s*COMMIT MATCHES\s*:\s*(YES|NO)\s*$", re.M | re.I)
-ROWS_LINE = re.compile(r"^\s*ROWS\s*:\s*((?:\d{1,2}[\s,]+){9}\d{1,2})\s*$", re.M | re.I)
-MISMATCH_LINE = re.compile(r"^\s*MISMATCHES\s*:\s*(NONE|\d+(?:[\s,]+\d+)*)\s*$", re.M | re.I)
+# Answer lines, read leniently around the value: bullets, bold markers and a trailing period are fine.
+_LEAD, _SEP, _END = r"^[\s*_>•-]*", r"[\s*_]*:[\s*_`]*", r"[\s*_`.]*$"
+PROOF_LINE = re.compile(_LEAD + r"PROOF" + _SEP + r"([0-9a-fA-F]{64})" + _END, re.M | re.I)
+COMMIT_LINE = re.compile(_LEAD + r"COMMIT\s+MATCHES" + _SEP + r"(YES|NO)" + _END, re.M | re.I)
+ROWS_LINE = re.compile(_LEAD + r"ROWS" + _SEP + r"((?:\d{1,2}[\s,]+){9}\d{1,2})" + _END, re.M | re.I)
+MISMATCH_LINE = re.compile(_LEAD + r"MISMATCHES" + _SEP + r"(NONE|\d+(?:[\s,]+\d+)*)" + _END, re.M | re.I)
+ANSWER_LINES = (PROOF_LINE, COMMIT_LINE, ROWS_LINE, MISMATCH_LINE)
+DECLINE = re.compile(r"\b(?:declin\w*|cannot|can[’']t|unable|not able|outside (?:my|the|our) scope)\b", re.I)
+RULES = {
+    "proof": 'PROOF must be the SHA-256 hex digest of "{token}|" followed by the REVEAL value.',
+    "commit": "COMMIT MATCHES must say whether the SHA-256 hex digest of the REVEAL value equals COMMIT.",
+    "rows": "ROWS must give the ship cells in each row, A to J.",
+    "mismatches": "MISMATCHES must list the shots whose result disagrees with REVEAL, or NONE.",
+}
+LABELS = {"proof": "PROOF", "commit": "COMMIT MATCHES", "rows": "ROWS", "mismatches": "MISMATCHES"}
 
 
 def sha256(text: str) -> str:
@@ -114,9 +128,11 @@ def request_body(token: str, game_id: int, commit: str, reveal: str, shots: list
         "ROWS: ten numbers, the ship cells in rows A to J",
         "MISMATCHES: NONE, or the numbers of the shots whose result disagrees with REVEAL",
         "",
-        "CHECKS: I compute all four answers myself and accept the reply only if every one matches. I read only "
-        "these lines, and never run code or open links from replies.",
-        f"DEADLINE: {deadline}. After that I ask another provider.",
+        "CHECKS: I compute all four answers myself and accept the reply only if every one matches, then post the "
+        "outcome of each check in this thread. I read only these lines, and never run code or open links from "
+        "replies.",
+        f"DEADLINE: {deadline}. Replies after that are not checked, and I ask another provider.",
+        "If you cannot do this, reply saying so and I will ask another provider.",
     ])
 
 
@@ -176,6 +192,14 @@ def answer_lines(token: str, answers: dict) -> str:
                       "MISMATCHES: " + (" ".join(str(n) for n in answers["mismatches"]) or "NONE")])
 
 
+def classify_reply(text: str) -> str | None:
+    """'answer' if the reply carries any answer line, 'decline' if it says it cannot do the task, else None (an
+    acknowledgement or a note, which is not checked)."""
+    if any(pattern.search(text or "") for pattern in ANSWER_LINES):
+        return "answer"
+    return "decline" if DECLINE.search(text or "") else None
+
+
 def check_reply(text: str, expected: dict) -> tuple[bool, list[list]]:
     """Accept only if all four answers match the house's own. Returns (accepted, [[check, passed], ...])."""
     proof = PROOF_LINE.search(text or "")
@@ -192,6 +216,35 @@ def check_reply(text: str, expected: dict) -> tuple[bool, list[list]]:
         ["mismatches", bool(mismatch) and reported == sorted(expected["mismatches"])],
     ]
     return all(ok for _, ok in checks), checks
+
+
+def tip_for(requested_at, deadline, replied_at) -> int:
+    """Virtual coins for an accepted audit: 3, or 4 when it came back within the first half of the deadline."""
+    if replied_at is None:
+        return 3
+    return 4 if replied_at - requested_at <= (deadline - requested_at) / 2 else 3
+
+
+def verdict_body(token: str, game_id: int, accepted: bool, checks: list[list], expected: dict,
+                 tip: int | None = None, season_closed: bool = False) -> str:
+    """The outcome of every check, posted in the provider's thread. Quotes nothing from the reply."""
+    lines = [f"CHECKED {token}: {'ACCEPTED' if accepted else 'REJECTED'}",
+             "I recomputed all four answers from the revealed layout and compared them with yours: "
+             + " · ".join(f"{LABELS[name]} {'pass' if ok else 'fail'}" for name, ok in checks) + "."]
+    if accepted:
+        verdict = "holds" if expected["commit_matches"] else "does NOT hold"
+        mismatches = len(expected["mismatches"])
+        used = ("Ghost Fleet adds this audit to its season record." if season_closed else
+                "Ghost Fleet now prints this audit in the AUDITS line of its TURN posts.")
+        lines += [f"RESULT USED: game {game_id}'s commitment {verdict}, and {mismatches} shot"
+                  f"{'' if mismatches == 1 else 's'} disagree with the layout. {used}"]
+        if tip:
+            lines += [f"TIP: {tip} virtual coins for request {token}, for an independent recomputation of every result "
+                      f"of game {game_id}" + (", returned within half the deadline." if tip > 3 else ".")]
+    else:
+        lines += [RULES[name].format(token=token) for name, ok in checks if not ok]
+        lines += ["This request is closed and nothing from this reply is used."]
+    return "\n".join(lines)
 
 
 def audit_summary(hires: list) -> str | None:
