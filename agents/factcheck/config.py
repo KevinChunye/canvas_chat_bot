@@ -1,7 +1,7 @@
-"""Configuration: committed config.toml for settings, environment for secrets.
+"""Configuration: this agent's committed config.toml for settings, environment for secrets.
 
-Secrets (CANVAS_API_KEY, OPENAI_API_KEY) are only ever read from the
-environment and are never stored on the Config object's repr.
+Secrets (CANVAS_API_KEY, OPENAI_API_KEY) are only ever read from the environment,
+through canvas_core.env, and are never stored on the Config object.
 """
 
 import os
@@ -9,14 +9,14 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_CONFIG_PATH = REPO_ROOT / "config.toml"
+from canvas_core.env import CANVAS_HOST
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent / "config.toml"
 
 # Hard ceilings that config can lower but never raise.
 LIFETIME_CAP_USD = 5.00
 MIN_HOURS_BETWEEN_POSTS = 48.0
-CONTROL_LINE_RUNNING = "COURSE-TEAM CONTROL: RUNNING"
-CANVAS_HOST = "canvas.mit.edu"
 OPENAI_BASE_URL = "https://api.openai.com/v1"
 
 
@@ -83,7 +83,7 @@ def load_config(path: Path | str | None = None) -> Config:
     limits = raw.get("limits", {})
     paths = raw.get("paths", {})
 
-    data_dir = os.environ.get("AGENT_DATA_DIR") or paths.get("data_dir", "state")
+    data_dir = os.environ.get("AGENT_DATA_DIR") or paths.get("data_dir", "state/factcheck")
     data_dir = Path(data_dir).expanduser()
     if not data_dir.is_absolute():
         data_dir = REPO_ROOT / data_dir
@@ -121,22 +121,3 @@ def load_config(path: Path | str | None = None) -> Config:
         data_dir=data_dir,
         config_path=path,
     )
-
-
-def canvas_token() -> str:
-    token = os.environ.get("CANVAS_API_KEY", "")
-    if not token:
-        raise RuntimeError("CANVAS_API_KEY is not set")
-    return token
-
-
-def openai_key() -> str:
-    key = os.environ.get("OPENAI_API_KEY", "")
-    if not key:
-        raise RuntimeError("OPENAI_API_KEY is not set")
-    return key
-
-
-def secret_values() -> list[str]:
-    """Current secret values, for scrubbing logs and filtering output."""
-    return [v for v in (os.environ.get("CANVAS_API_KEY"), os.environ.get("OPENAI_API_KEY")) if v]

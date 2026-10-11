@@ -5,9 +5,9 @@ from http.server import ThreadingHTTPServer
 
 import pytest
 
-from agent import server
-from agent.llm import calibrate, openai_complete, parse_decision
-from tests.conftest import post_decision
+from agents.factcheck import server
+from agents.factcheck.llm import calibrate, openai_complete, parse_decision
+from tests.factcheck.conftest import post_decision
 
 
 def test_openai_client_is_pinned_to_api_openai_com(cfg, monkeypatch):
@@ -34,7 +34,7 @@ def test_parse_decision_accepts_valid_and_coerces_ids():
                                                                              "body": "x"}}),
 ])
 def test_parse_decision_rejects_malformed(raw):
-    from agent.llm import MalformedDecision
+    from agents.factcheck.llm import MalformedDecision
     with pytest.raises(MalformedDecision):
         parse_decision(raw)
 

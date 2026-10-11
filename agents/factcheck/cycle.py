@@ -6,17 +6,21 @@ import sys
 import time
 from dataclasses import dataclass
 
+from canvas_core.canvas import Canvas, CanvasAuthError, LostAck
+from canvas_core.env import canvas_token, openai_key, secret_values
+from canvas_core.forum import fetch_forum, own_replied_targets
+from canvas_core.log import CycleLog
+from canvas_core.text import content_hash, max_similarity, scrub, to_html, truncate, word_count
+from canvas_core.times import parse_time
+
 from .actions import Writer, spacing_block
 from .budget import BudgetExhausted, BudgetRefused, Ledger
-from .canvas import Canvas, CanvasAuthError, LostAck
-from .config import Config, canvas_token, openai_key, secret_values
-from .forum import (build_thread_blocks, exchanges_with_author, fetch_forum, find_candidates, newest,
-                    own_replied_targets)
+from .candidates import build_thread_blocks, exchanges_with_author, find_candidates, newest
+from .config import Config
+from .filters import output_violations
 from .llm import MalformedDecision, calibrate, call, new_nonce, openai_complete, parse_decision, system_prompt, \
     user_prompt
-from .log import CycleLog
-from .store import Store, parse_time
-from .text import content_hash, max_similarity, output_violations, scrub, to_html, truncate, word_count
+from .store import Store
 
 HALT_AFTER_FAILURES = 3
 
@@ -298,7 +302,7 @@ def run_cycle(cfg: Config, dry_run: bool = False, *, canvas=None, complete=None,
     try:
         reason = store.halt_reason()
         if reason:
-            print(f"halted: {reason}. Clear with: python -m agent.cli unhalt", file=sys.stderr)
+            print(f"halted: {reason}. Clear with: python -m agents.factcheck.cli unhalt", file=sys.stderr)
             return {"outcome": "halted", "summary": reason}
         if cfg.course_id is None or cfg.forum_topic_id is None:
             raise RuntimeError("course_id/forum_topic_id missing from config; run scripts/discover.py")

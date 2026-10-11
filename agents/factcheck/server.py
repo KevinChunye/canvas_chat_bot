@@ -15,9 +15,11 @@ import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from .config import load_config, secret_values
+from canvas_core.env import secret_values
+from canvas_core.text import scrub
+
+from .config import load_config
 from .cycle import run_cycle
-from .text import scrub
 
 SCHEDULE_PROMPT = "run-cycle"
 SCHEDULES = [{"id": "footnote-cycle", "cron": "0 */3 * * *", "tz": "UTC", "prompt": SCHEDULE_PROMPT,

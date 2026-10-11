@@ -1,13 +1,13 @@
 import dataclasses
 import json
 
-from agent.cli import main as cli_main
-from agent.cycle import run_cycle
-from agent.report import build_report
-from agent.store import Store
-from agent.text import content_hash, to_html
-from tests.conftest import (FAKE_CANVAS_KEY, FAKE_OPENAI_KEY, GOOD_BODY, OTHER_BODY, OTHER_TOPIC, SELF_ID,
-                            FakeLLM, no_sleep, post_decision, skip_decision)
+from agents.factcheck.cli import main as cli_main
+from agents.factcheck.cycle import run_cycle
+from agents.factcheck.report import build_report
+from agents.factcheck.store import Store
+from canvas_core.text import content_hash, to_html
+from tests.conftest import FAKE_CANVAS_KEY, FAKE_OPENAI_KEY, OTHER_TOPIC, SELF_ID, no_sleep
+from tests.factcheck.conftest import GOOD_BODY, OTHER_BODY, FakeLLM, post_decision, skip_decision
 
 
 def no_spacing(cfg):
@@ -198,8 +198,8 @@ def test_per_hour_cap_blocks_new_posts(cfg, store, canvas):
 
 def test_per_cycle_cap_is_enforced_at_write_time(cfg, store, canvas):
     cfg = no_spacing(cfg)                     # isolate this rule from the 48h spacing
-    from agent.actions import Writer
-    from agent.canvas import Canvas
+    from agents.factcheck.actions import Writer
+    from canvas_core.canvas import Canvas
     root = canvas.add(200, "thread")
     client = Canvas(cfg.canvas_base_url, FAKE_CANVAS_KEY, cfg.course_id, cfg.forum_topic_id, sleep=no_sleep)
     writer = Writer(client, store, dataclasses.replace(cfg, max_posts_per_hour=3), SELF_ID, "c1",
@@ -380,7 +380,7 @@ def test_injection_post_stays_inside_policy(cfg, store, canvas):
     assert "not an entry fetched from the forum topic" in result["summary"] and canvas.posts() == []
 
     # 4. the only write path refuses any other topic, whatever the model says
-    from agent.canvas import Canvas, Forbidden
+    from canvas_core.canvas import Canvas, Forbidden
     client = Canvas(cfg.canvas_base_url, FAKE_CANVAS_KEY, cfg.course_id, cfg.forum_topic_id, sleep=no_sleep)
     try:
         client.create_entry(OTHER_TOPIC, "<p>hi</p>")
@@ -506,8 +506,8 @@ def test_post_allowed_again_after_48_hours(cfg, store, canvas):
 
 
 def test_spacing_is_rechecked_right_before_each_post(cfg, store, canvas):
-    from agent.actions import Writer
-    from agent.canvas import Canvas
+    from agents.factcheck.actions import Writer
+    from canvas_core.canvas import Canvas
     root = canvas.add(200, "thread")
     old = store.add_action("c0", "reply", 9000, 9000, "earlier", "<p>x</p>", "h0")
     store.confirm_action(old, 8000, "test")                       # posted moments ago
@@ -526,7 +526,7 @@ def test_dry_run_reports_the_spacing_block(cfg, store, canvas):
 
 
 def test_config_cannot_shorten_the_48_hour_spacing(tmp_path):
-    from agent.config import load_config
+    from agents.factcheck.config import load_config
     path = tmp_path / "c.toml"
     path.write_text("[limits]\nmin_hours_between_posts = 1\n")
     assert load_config(path).min_hours_between_posts == 48

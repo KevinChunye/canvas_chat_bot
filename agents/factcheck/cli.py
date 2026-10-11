@@ -1,11 +1,11 @@
 """Command line entry point.
 
-    python -m agent.cli run-cycle          one live cycle, then exit
-    python -m agent.cli dry-run            full cycle with a real LLM decision, no writes, no memory changes
-    python -m agent.cli status             halt state, failures, pending actions, spend
-    python -m agent.cli unhalt             clear the halt flag and the failure count
-    python -m agent.cli report [--out F]   markdown evidence report
-    python -m agent.cli fault drop_ack_once   arm the one-shot lost-acknowledgement fault
+    python -m agents.factcheck.cli run-cycle          one live cycle, then exit
+    python -m agents.factcheck.cli dry-run            full cycle with a real LLM decision, no writes, no memory changes
+    python -m agents.factcheck.cli status             halt state, failures, pending actions, spend
+    python -m agents.factcheck.cli unhalt             clear the halt flag and the failure count
+    python -m agents.factcheck.cli report [--out F]   markdown evidence report
+    python -m agents.factcheck.cli fault drop_ack_once   arm the one-shot lost-acknowledgement fault
 """
 
 import argparse
@@ -47,7 +47,7 @@ def cmd_status(cfg) -> int:
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(prog="python -m agent.cli", description="Footnote, a forum agent")
+    parser = argparse.ArgumentParser(prog="python -m agents.factcheck.cli", description="Footnote, a forum agent")
     parser.add_argument("--config", default=None, help="path to config.toml")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("run-cycle")

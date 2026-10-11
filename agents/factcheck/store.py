@@ -4,11 +4,12 @@ crash at any point leaves a consistent record to resume from."""
 import json
 import sqlite3
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 
-from .config import secret_values
-from .text import scrub
+from canvas_core.env import secret_values
+from canvas_core.text import scrub
+from canvas_core.times import iso, now, parse_time
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS seen_entries (
@@ -81,20 +82,6 @@ CREATE TABLE IF NOT EXISTS state (
     value TEXT
 );
 """
-
-
-def now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-def iso(dt: datetime) -> str:
-    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-
-
-def parse_time(value: str | None) -> datetime | None:
-    if not value:
-        return None
-    return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
 class Store:

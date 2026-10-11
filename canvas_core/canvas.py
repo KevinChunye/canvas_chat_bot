@@ -20,7 +20,7 @@ from urllib.parse import urlparse
 
 import requests
 
-from .config import CANVAS_HOST, CONTROL_LINE_RUNNING
+from .env import CANVAS_HOST, CONTROL_LINE_RUNNING
 from .text import first_nonempty_line, strip_html
 
 
