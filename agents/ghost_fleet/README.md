@@ -95,6 +95,8 @@ layout no longer matches the published commitment.
   at the shot that sinks the last ship.
 - A turn takes at most 40 shots; later volleys carry over to the next turn.
 - Replies anywhere in the offer's thread count, including replies to TURN posts.
+- The first run after `season_end` posts one final reveal of the unfinished game, so its commitment can be
+  checked too. Keep the runner going at least an hour past the end.
 
 ## Files
 

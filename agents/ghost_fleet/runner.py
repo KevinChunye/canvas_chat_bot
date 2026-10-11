@@ -102,6 +102,7 @@ class Plan:
     changed_players: set = field(default_factory=set)
     announce: list = field(default_factory=list)
     post: bool = True
+    final: bool = False                            # the season's closing reveal
 
 
 class TurnRun:
@@ -178,7 +179,8 @@ class TurnRun:
         self.result["turn"] = turn
         if turn < 1:
             return self.finish("idle", f"season starts {cfg.season_start.isoformat()}")
-        if turn_time(cfg, turn) > cfg.season_end:
+        season_over = turn_time(cfg, turn) > cfg.season_end
+        if season_over and (store.get_state("season_closed") or not store.games()):
             return self.finish("idle", "season is over")
         if store.turn_row(turn) is not None:
             return self.finish("idle", f"turn {turn} already posted")
@@ -186,16 +188,20 @@ class TurnRun:
         if not gate_open:
             return self.finish("idle", f"control gate closed ({line[:60]}); volleys wait")
 
-        entries = fetch_forum(self.canvas, log)[0] if offer_id is not None else {}
-        plan = self.plan(turn, entries, self_id, offer_id)
+        if season_over:
+            plan = self.final_plan(turn)
+        else:
+            entries = fetch_forum(self.canvas, log)[0] if offer_id is not None else {}
+            plan = self.plan(turn, entries, self_id, offer_id)
         violations = post_violations(plan.body, secret_values(), plan.commitments) if plan.post else []
         self.result.update(post=plan.body if plan.post else None, record=plan.record)
         if violations:
             log("post_rejected", reasons=violations)
             return self.finish("error", f"TURN post failed the filter: {violations}; nothing committed", failed=True)
 
+        what = f"the final reveal of game {plan.game_id}" if plan.final else f"turn {turn}"
         if self.dry_run:
-            return self.finish("dry_run", f"would post turn {turn}" if plan.post else "quiet hour: nothing to post")
+            return self.finish("dry_run", f"would post {what}" if plan.post else "quiet hour: nothing to post")
 
         self.commit(plan)
         if not plan.post:
@@ -203,10 +209,10 @@ class TurnRun:
         write_spectator_state(cfg, store)
         outcome = poster.execute(turn)
         if outcome == "confirmed":
-            return self.finish("posted", f"turn {turn} posted as entry {store.turn_row(turn)['canvas_entry_id']}")
+            return self.finish("posted", f"{what} posted as entry {store.turn_row(turn)['canvas_entry_id']}")
         if outcome == "gate_closed":
-            return self.finish("idle", f"control gate closed at write time; turn {turn} stays pending")
-        return self.finish("error", f"turn {turn}: {outcome}", failed=True)
+            return self.finish("idle", f"control gate closed at write time; {what} stays pending")
+        return self.finish("error", f"{what}: {outcome}", failed=True)
 
     def plan(self, turn: int, entries: dict, self_id: int, offer_id: int | None) -> Plan:
         store, cfg = self.store, self.cfg
@@ -277,6 +283,18 @@ class TurnRun:
             plan.announce = [nxt["id"]]
         return self.render(plan, shot_rows)
 
+    def final_plan(self, turn: int) -> Plan:
+        """The season's last post: the unfinished game stops and its layout is revealed, so its commitment
+        can be checked like every other game's."""
+        game_rows = [dict(r) for r in self.store.games()]
+        current = game_rows[-1]
+        current["end_turn"] = turn
+        record = {"turn": turn, "time": turn_time(self.cfg, turn).isoformat(), "game": current["id"],
+                  "volleys": [], "skipped": [], "refunded": [], "carried": [], "final": True}
+        plan = Plan(turn, current["id"], record, game_rows=game_rows, ended_game=current["id"], final=True,
+                    players={r["player_id"]: dict(r) for r in self.store.players()})
+        return self.render(plan, [dict(r) for r in self.store.shots()])
+
     def render(self, plan: Plan, shot_rows: list[dict]) -> Plan:
         names = {pid: p["callsign"] or p["default_name"] for pid, p in plan.players.items()}
 
@@ -287,7 +305,8 @@ class TurnRun:
         game = next(g for g in games if g.id == plan.game_id)
         nxt = games[-1] if games[-1].id != plan.game_id else None
         board = engine.leaderboards(games)
-        plan.body = engine.render_turn_post(game, display_record(plan.record, name), board, next_game=nxt)
+        plan.body = engine.render_turn_post(game, display_record(plan.record, name), board, next_game=nxt,
+                                            final=plan.final)
         plan.header = plan.body.splitlines()[0]
         plan.message_html = to_html(plan.body)
         plan.commitments = [g.commit for g in games]
@@ -314,6 +333,8 @@ class TurnRun:
                 store.add_turn(plan.turn, plan.game_id, plan.record, plan.header, plan.body, plan.message_html)
                 for game_id in plan.announce:
                     store.announce(game_id)
+            if plan.final:
+                store.set_state("season_closed", "1", commit=False)
             store.db.commit()
         except BaseException:
             store.db.rollback()
@@ -448,7 +469,8 @@ def spectator_state(cfg: Config, store: Store) -> dict | None:
 
     games = rebuild([dict(r) for r in store.games()], [dict(r) for r in store.shots()], name)
     state, _ = engine.export(games, [display_record(t, name) for t in turns], demo=False,
-                             ends=cfg.season_end.isoformat(), status="RUNNING")
+                             ends=cfg.season_end.isoformat(),
+                             status="ENDED" if store.get_state("season_closed") else "RUNNING")
     return state
 
 

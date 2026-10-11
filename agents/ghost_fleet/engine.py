@@ -321,11 +321,16 @@ def fmt_time(iso):
     return t.strftime("%a %b %d · %I:%M %p ET").replace(" 0", " ")
 
 
-def render_turn_post(game, record, board, next_game=None):
+def render_turn_post(game, record, board, next_game=None, final=False):
     """The TURN reply. When this turn sank the fleet, it also reveals the layout and, given next_game,
-    opens the next game with its commitment."""
+    opens the next game with its commitment. final=True is the season's last post: the unfinished game
+    stops and its layout is revealed, so its commitment can be checked like every other game's."""
     sunk_cells = {x for s in game.sunk for x in s["cells"]}
-    out = [f"GHOST FLEET · TURN {record['turn']} · GAME {game.id} · {fmt_time(record['time'])}", "THIS TURN"]
+    if final:
+        out = [f"GHOST FLEET · SEASON OVER · GAME {game.id} · {fmt_time(record['time'])}", "THIS TURN",
+               f"The season has ended. Game {game.id} stops here, unfinished."]
+    else:
+        out = [f"GHOST FLEET · TURN {record['turn']} · GAME {game.id} · {fmt_time(record['time'])}", "THIS TURN"]
     for v in record["volleys"]:
         parts = []
         for s in v["shots"]:
@@ -340,7 +345,7 @@ def render_turn_post(game, record, board, next_game=None):
         out.append("SKIPPED (cooldown): " + ", ".join(record["skipped"]))
     if record["refunded"]:
         out.append("REFUNDED: " + ", ".join(record["refunded"]))
-    if not (record["volleys"] or record["skipped"] or record["refunded"] or record.get("carried")):
+    if not (final or record["volleys"] or record["skipped"] or record["refunded"] or record.get("carried")):
         out.append("No volleys this turn.")
     if record.get("carried"):
         out.append("CARRIED to next turn: " + ", ".join(record["carried"]))
@@ -354,7 +359,8 @@ def render_turn_post(game, record, board, next_game=None):
     for band in ["hot", "warm", "cold"]:
         cells = [s["cell"] for s in game.shots if s["hint"] == band]
         out.append(f"MISS {band.upper()}: " + (" ".join(cells) or "none"))
-    out.append("INTEL: " + (" · ".join(f"{i['line']} holds {i['count']} ship cells" for i in game.intel) or "none yet"))
+    out.append("INTEL: " + (" · ".join(f"{i['line']} holds {i['count']} ship cell{'' if i['count'] == 1 else 's'}"
+                                         for i in game.intel) or "none yet"))
     sunk_names = {s["ship"] for s in game.sunk}
     out.append("AFLOAT: " + (" ".join(f"{n}({l})" for n, l in FLEET if n not in sunk_names) or "none"))
     found = sum(1 for s in game.shots if s["result"] != "miss")
@@ -378,8 +384,14 @@ def render_turn_post(game, record, board, next_game=None):
         out.append(f"GAME {game.id} OVER in {len(game.shots)} shots · {medal} · First Blood {s['first_blood']} · "
                    f"Sharpshooter {s['sharpshooter'] or 'none'} · Admiral {s['admiral']}")
         out.append(f"REVEAL G{game.id}: {game.reveal}")
+    elif final:
+        out.append(f"REVEAL G{game.id}: {game.reveal}")
     if next_game is not None:
         out.append(f"NEW GAME {next_game.id} · COMMIT G{next_game.id}: {next_game.commit}")
+    if final:
+        out.append("Every layout is now public: hash each REVEAL line and compare it with its COMMIT. "
+                   "Thanks for playing.")
+        return "\n".join(out)
     out.append("NEXT: reply to the offer with FIRE + up to 4 cells. Your first 2 open cells fire. One volley per 2 hours.")
     return "\n".join(out)
 
@@ -399,7 +411,8 @@ def sonar_mix(trials=3000, seed=1):
 
 def export(games, turns, demo=True, ends="2026-10-14T20:00:00-04:00", status="RUNNING"):
     board = leaderboards(games)
-    current = games[-1]
+    live = [g for g in games if g.end_turn is None]
+    current = live[-1] if live else None
     summaries = {g.id: game_summary(g) for g in games}
     medal_count = {}
     title_count = {}
@@ -419,10 +432,11 @@ def export(games, turns, demo=True, ends="2026-10-14T20:00:00-04:00", status="RU
                         "medals": medal_count.get(r.player, 0), "titles": title_count.get(r.player, 0)})
     history = []
     for g in games:
-        if not g.over:
+        if g.end_turn is None:          # still live: its layout stays secret
             continue
         s = summaries[g.id]
-        history.append({"game": g.id, "commit": g.commit, "reveal": g.reveal, "start_turn": g.start_turn,
+        closed = {} if g.over else {"closed": True}   # stopped unfinished at season end
+        history.append({**closed, "game": g.id, "commit": g.commit, "reveal": g.reveal, "start_turn": g.start_turn,
                         "end_turn": g.end_turn, "total_shots": len(g.shots), "medal": s["medal"],
                         "first_blood": s["first_blood"], "admiral": s["admiral"],
                         "sharpshooter": s["sharpshooter"], "shots": g.shots, "intel": g.intel})
@@ -437,9 +451,10 @@ def export(games, turns, demo=True, ends="2026-10-14T20:00:00-04:00", status="RU
                       "shots_per_volley": SHOTS_PER_VOLLEY, "max_listed": MAX_CELLS_LISTED,
                       "intel_every": INTEL_EVERY, "min_games_for_avg": MIN_GAMES_FOR_AVG, "points": POINTS},
         },
-        "current": {"game": current.id, "commit": current.commit, "start_turn": current.start_turn,
-                    "shots": current.shots, "sunk": current.sunk, "intel": current.intel,
-                    "first_blood": summaries[current.id]["first_blood"]},
+        "current": None if current is None else {
+            "game": current.id, "commit": current.commit, "start_turn": current.start_turn,
+            "shots": current.shots, "sunk": current.sunk, "intel": current.intel,
+            "first_blood": summaries[current.id]["first_blood"]},
         "history": history,
         "turns": turns,
         "players": players,

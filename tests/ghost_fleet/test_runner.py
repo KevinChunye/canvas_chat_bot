@@ -200,6 +200,26 @@ def test_nothing_happens_outside_the_season(cfg, store, canvas, offer, clock, se
     assert canvas.posts() == []
 
 
+def test_season_end_reveals_the_unfinished_game_once(cfg, store, canvas, offer, clock):
+    open_game(cfg, store, clock)
+    fire(canvas, offer, ALICE, "FIRE B5 C5")
+    turn(cfg, store)
+    clock.at = cfg.season_end + timedelta(hours=1)
+    result = turn(cfg, store)
+    assert result["outcome"] == "posted" and "final reveal of game 1" in result["summary"]
+    body = store.turn_row(result["turn"])["body"]
+    assert body.startswith("GHOST FLEET · SEASON OVER · GAME 1")
+    reveal = body.split("REVEAL G1: ")[1].splitlines()[0]
+    assert hashlib.sha256(reveal.encode()).hexdigest() == store.games()[0]["commit_hash"]
+
+    clock.advance()
+    assert turn(cfg, store)["summary"] == "season is over"
+    assert len(posts_by_house(canvas, offer)) == 3                 # opening, turn 2, final reveal
+    state = json.loads(cfg.state_json_path.read_text())
+    assert state["season"]["status"] == "ENDED" and state["current"] is None
+    assert state["history"][0]["closed"] and state["history"][0]["reveal"] == reveal
+
+
 def test_dry_run_prints_the_post_and_writes_nothing(cfg, store, canvas, offer, clock):
     open_game(cfg, store, clock)
     fire(canvas, offer, ALICE, "FIRE B5 C5\nCALLSIGN Kraken")
