@@ -11,8 +11,12 @@
     python -m agents.ghost_fleet.cli post-offer            post offer.txt as a new thread, once
     python -m agents.ghost_fleet.cli set-offer ENTRY_ID    use an offer you already posted
     python -m agents.ghost_fleet.cli run-turn              one live turn (what the hourly schedule runs)
-    python -m agents.ghost_fleet.cli status                halt state, offer, games, pending posts, recent runs
+    python -m agents.ghost_fleet.cli status                halt state, offer, games, audits, pending posts, runs
     python -m agents.ghost_fleet.cli unhalt                clear the halt flag and the failure count
+
+    Evidence (add --sandbox to build it from the practice forum instead):
+    python -m agents.ghost_fleet.cli report [--out F]     markdown: links, discovery scans, audits, checks, safety
+    python -m agents.ghost_fleet.cli writeup [--out F]    the 2-3 page technical write-up PDF
 """
 
 import argparse
@@ -22,6 +26,7 @@ from datetime import datetime
 
 from . import sandbox
 from .config import load_config
+from .report import build_report, build_writeup
 from .runner import post_offer, run_turn, turn_of
 from .store import Store
 
@@ -37,8 +42,10 @@ def cmd_status(cfg) -> int:
         shots = store.db.execute("SELECT COUNT(*) FROM shots WHERE game_id = ?", (g["id"],)).fetchone()[0]
         state = f"ended turn {g['end_turn']}" if g["end_turn"] else "in play"
         print(f"game {g['id']}: {shots} shots, {state}, commit {g['commit_hash']}")
-    for row in store.pending_turns():
-        print(f"pending TURN post: turn {row['turn']}, attempts {row['attempts']}, created {row['created_at']}")
+    for h in store.hires():
+        print(f"audit {h['token']}: {h['status']} (provider offer {h['provider_entry_id']}, deadline {h['deadline']})")
+    for row in store.pending_posts():
+        print(f"pending post {row['key']}: attempts {row['attempts']}, created {row['created_at']}")
     print("recent runs:")
     for r in store.db.execute("SELECT run_id, mode, outcome, summary FROM runs ORDER BY started_at DESC LIMIT 5"):
         print(f"  {r['run_id']} [{r['mode']}] {r['outcome']}: {r['summary']}")
@@ -85,6 +92,10 @@ def main(argv=None) -> int:
     set_offer.add_argument("entry_id", type=int)
     sub.add_parser("status")
     sub.add_parser("unhalt")
+    for name, default in (("report", "ghost_fleet_report.md"), ("writeup", "ghost_fleet_writeup.pdf")):
+        evidence = sub.add_parser(name)
+        evidence.add_argument("--out", default=default)
+        evidence.add_argument("--sandbox", action="store_true", help="use the practice forum's data")
     sand = sub.add_parser("sandbox")
     sand.add_argument("action", choices=["reset", "reply", "turn", "auto"])
     sand.add_argument("name", nargs="?")
@@ -106,6 +117,20 @@ def run(args) -> int:
         return cmd_sandbox(cfg, args)
     if args.command == "status":
         return cmd_status(cfg)
+    if args.command in ("report", "writeup"):
+        source = sandbox.sandbox_config(cfg) if args.sandbox else cfg
+        store = Store(source.db_path)
+        try:
+            if args.command == "report":
+                with open(args.out, "w", encoding="utf-8") as f:
+                    f.write(build_report(source, store))
+                print(f"wrote {args.out}")
+            else:
+                pages = build_writeup(source, store, args.out, sandbox=args.sandbox)
+                print(f"wrote {args.out} ({pages} pages)")
+        finally:
+            store.close()
+        return 0
     if args.command == "run-turn":
         result = run_turn(cfg)
         print(json.dumps({k: result.get(k) for k in ("run_id", "turn", "outcome", "summary")}))

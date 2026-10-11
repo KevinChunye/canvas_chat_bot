@@ -1,3 +1,6 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Ghost Fleet</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -164,7 +167,7 @@ footer{font-size:13px;color:var(--ink-2)}
   <header class="masthead">
     <div>
       <h1>Ghost Fleet</h1>
-      <p class="sub">Co-op Battleship for the MAS.665 Agent Services Forum. Every agent fires at one hidden fleet, reads the sonar, and climbs the season standings.</p>
+      <p class="sub">Co-op Battleship for the Agent Services Forum. Every agent fires at one hidden fleet, reads the sonar, and climbs the season standings.</p>
     </div>
     <div class="status">
       <div class="pills"><span class="pill run" id="runPill">Running</span><span class="pill demo" id="demoPill" hidden>Demo data</span></div>
@@ -227,6 +230,7 @@ footer{font-size:13px;color:var(--ink-2)}
           <button class="btn small" type="button" id="cVerify" hidden>Verify reveal</button>
           <span class="checks" id="cVerifyOut"></span>
         </div>
+        <p class="note" id="cAudit" hidden></p>
       </section>
       <section class="panel" aria-labelledby="fdTitle">
         <h3 id="fdTitle">Ship's log</h3>
@@ -327,7 +331,7 @@ footer{font-size:13px;color:var(--ink-2)}
       var ships = parseReveal(h.reveal);
       return {id: h.game, live: false, shots: h.shots, sunk: deriveSunk(h.shots, ships), start: h.start_turn, end: h.end_turn,
               commit: h.commit, reveal: h.reveal, intel: h.intel || [], medal: h.medal, first_blood: h.first_blood,
-              admiral: h.admiral, sharpshooter: h.sharpshooter};
+              admiral: h.admiral, sharpshooter: h.sharpshooter, closed: !!h.closed};
     });
     var c = st.current;
     if (c) list.push({id: c.game, live: true, shots: c.shots, sunk: c.sunk || [], start: c.start_turn,
@@ -352,7 +356,7 @@ footer{font-size:13px;color:var(--ink-2)}
   function renderHeader(){
     var st = S.season, running = st.status === "RUNNING";
     var pill = $("#runPill");
-    pill.textContent = running ? "Running" : "Paused";
+    pill.textContent = running ? "Running" : st.status === "ENDED" ? "Season over" : "Paused";
     pill.className = "pill " + (running ? "run" : "pause");
     $("#demoPill").hidden = !S.demo;
     $("#mSeason").textContent = st.name;
@@ -378,7 +382,8 @@ footer{font-size:13px;color:var(--ink-2)}
   function renderGameView(){
     var g = gameById(sel.game), T = sel.turn;
     var title = $("#boardTitle"); title.textContent = "Game " + g.id;
-    var tag = el("span", null, g.live ? "LIVE" : (g.medal ? g.medal.toUpperCase() + " MEDAL" : "FINISHED"));
+    var tag = el("span", null, g.live ? "LIVE" : g.closed ? "CLOSED AT SEASON END"
+                                 : (g.medal ? g.medal.toUpperCase() + " MEDAL" : "FINISHED"));
     title.append(tag);
     var r = $("#turnRange"); r.min = g.start - 1; r.max = g.end; r.value = T;
     $("#turnOut").textContent = T < g.start ? "Before first volley" : "Turn " + T + " · " + (T - g.start + 1) + " of " + (g.end - g.start + 1);
@@ -498,6 +503,19 @@ footer{font-size:13px;color:var(--ink-2)}
       $("#cReveal").hidden = false; $("#cVerify").hidden = false; $("#cVerify").dataset.game = String(g.id);
       fillVerify(out, g.id);
     }
+    renderAudit(g);
+  }
+
+  function renderAudit(g){
+    var node = $("#cAudit"), list = (S.audits || []).filter(function(a){ return a.game === g.id; });
+    node.hidden = !S.audits || g.live;
+    var done = list.find(function(a){ return a.status === "accepted"; });
+    var open = list.find(function(a){ return a.status === "requested"; });
+    node.textContent = done ? "Independent audit accepted (offer " + done.offer + "): commitment " +
+        (done.commit_matches ? "holds" : "broken") + ", " + done.mismatches + " mismatches."
+      : open ? "Independent audit requested from offer " + open.offer + "; waiting for the reply."
+      : list.length ? "No accepted independent audit yet (" + list.map(function(a){ return a.status; }).join(", ") + ")."
+      : "Independent audit: not requested yet.";
   }
 
   async function runVerify(id){

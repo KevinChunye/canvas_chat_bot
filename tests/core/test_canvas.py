@@ -165,7 +165,7 @@ def test_forum_reads_and_self_are_allowed(canvas):
 
 def test_only_the_discovery_client_may_list_courses_and_topics(requests_mock):
     requests_mock.get("https://canvas.mit.edu/api/v1/courses", json=[{"id": 1}])
-    requests_mock.get(f"https://canvas.mit.edu/api/v1/courses/1/discussion_topics", json=[{"id": TOPIC}])
+    requests_mock.get("https://canvas.mit.edu/api/v1/courses/1/discussion_topics", json=[{"id": TOPIC}])
     with pytest.raises(Forbidden):
         client().active_courses()
     discovery = Canvas("https://canvas.mit.edu", FAKE_CANVAS_KEY, None, None, sleep=no_sleep, read_only=True,

@@ -1,13 +1,14 @@
 """SQLite memory for Ghost Fleet. A game is stored as its secret seed plus its shots: replaying the shots
 through engine.Game rebuilds the board, sonar and intel exactly, so nothing derived is ever stored twice.
 
-Everything a turn decides (shots, volley outcomes, players, game end, the next game, the pending TURN post)
-is committed in one transaction before the POST, so a crash at any point resumes cleanly."""
+Every write to Canvas (the offer, TURN posts, audit requests) is a row in `outbox`, committed before the POST
+in the same transaction as whatever it reports, so a crash at any point resumes cleanly and nothing is posted
+twice."""
 
 import json
 import sqlite3
 import uuid
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from canvas_core.env import secret_values
@@ -49,8 +50,13 @@ CREATE TABLE IF NOT EXISTS players (
 CREATE TABLE IF NOT EXISTS turns (
     turn INTEGER PRIMARY KEY,
     game_id INTEGER,
-    record TEXT,               -- JSON, players by id
-    header TEXT,               -- first line of the post; finds it again after a lost acknowledgement
+    record TEXT                -- JSON, players by id; the post itself is outbox row 'turn:<turn>'
+);
+CREATE TABLE IF NOT EXISTS outbox (
+    key TEXT PRIMARY KEY,      -- offer | turn:<n> | hire:<token>
+    kind TEXT,                 -- offer | turn | hire
+    parent_entry_id INTEGER,   -- the entry it replies to; NULL for a new thread
+    header TEXT,               -- first line; finds the post again after a lost acknowledgement
     body TEXT,
     message_html TEXT,
     status TEXT,               -- pending | confirmed | abandoned
@@ -60,9 +66,33 @@ CREATE TABLE IF NOT EXISTS turns (
     confirmed_at TEXT,
     note TEXT
 );
+CREATE TABLE IF NOT EXISTS hires (
+    token TEXT PRIMARY KEY,    -- GF-AUDIT-G<game>-<offer entry id>
+    game_id INTEGER,
+    provider_entry_id INTEGER, -- the offer the request replies to
+    provider_user_id INTEGER,
+    score INTEGER,
+    capabilities TEXT,         -- JSON: our capability labels the offer matched
+    expected TEXT,             -- JSON: the answers the house computed itself
+    status TEXT,               -- requested | accepted | rejected | expired | unsent
+    deadline TEXT,
+    reply_entry_id INTEGER,
+    checks TEXT,               -- JSON: [[check, passed], ...] for the reply that settled it
+    created_at TEXT,
+    settled_at TEXT
+);
+CREATE TABLE IF NOT EXISTS discoveries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT,
+    at TEXT,
+    game_id INTEGER,
+    offers_seen INTEGER,
+    candidates TEXT,           -- JSON: [{entry_id, user_id, score, capabilities, suitable}]
+    chosen_entry_id INTEGER
+);
 CREATE TABLE IF NOT EXISTS events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    turn INTEGER,
+    subject TEXT,              -- an outbox key, a hire token, or a run
     run_id TEXT,
     at TEXT,
     event TEXT,
@@ -81,6 +111,8 @@ CREATE TABLE IF NOT EXISTS state (
     value TEXT
 );
 """
+
+TURN_JOIN = ("SELECT t.turn, t.game_id, t.record, o.* FROM turns t JOIN outbox o ON o.key = 'turn:' || t.turn")
 
 
 class Store:
@@ -156,9 +188,9 @@ class Store:
                         (self.now_iso(), outcome, scrub(summary, secret_values()), run_id))
         self.db.commit()
 
-    def add_event(self, turn: int | None, run_id: str, event: str, detail: dict | None = None) -> None:
-        self.db.execute("INSERT INTO events(turn, run_id, at, event, detail) VALUES (?, ?, ?, ?, ?)",
-                        (turn, run_id, self.now_iso(), event, json.dumps(detail or {})))
+    def add_event(self, subject: str | None, run_id: str, event: str, detail: dict | None = None) -> None:
+        self.db.execute("INSERT INTO events(subject, run_id, at, event, detail) VALUES (?, ?, ?, ?, ?)",
+                        (subject, run_id, self.now_iso(), event, scrub(json.dumps(detail or {}), secret_values())))
         self.db.commit()
 
     # ------------------------------------------------------------------ games and shots
@@ -213,46 +245,99 @@ class Store:
             "ON CONFLICT(player_id) DO UPDATE SET callsign = excluded.callsign",
             (player_id, callsign, default_name, first_turn))
 
+    # ------------------------------------------------------------------ the outbox: every write to Canvas
+
+    def add_post(self, key: str, kind: str, parent_entry_id: int | None, header: str, body: str,
+                 message_html: str) -> None:
+        self.db.execute(
+            "INSERT INTO outbox(key, kind, parent_entry_id, header, body, message_html, status, attempts, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?)",
+            (key, kind, parent_entry_id, header, body, message_html, self.now_iso()))
+
+    def post(self, key: str) -> sqlite3.Row | None:
+        return self.db.execute("SELECT * FROM outbox WHERE key = ?", (key,)).fetchone()
+
+    def posts(self) -> list[sqlite3.Row]:
+        return self.db.execute("SELECT * FROM outbox ORDER BY created_at").fetchall()
+
+    def pending_posts(self) -> list[sqlite3.Row]:
+        return self.db.execute("SELECT * FROM outbox WHERE status = 'pending' ORDER BY created_at").fetchall()
+
+    def bump_attempts(self, key: str) -> None:
+        self.db.execute("UPDATE outbox SET attempts = attempts + 1 WHERE key = ?", (key,))
+        self.db.commit()
+
+    def set_canvas_entry(self, key: str, entry_id: int) -> None:
+        self.db.execute("UPDATE outbox SET canvas_entry_id = ? WHERE key = ?", (entry_id, key))
+        self.db.commit()
+
+    def confirm_post(self, key: str, entry_id: int, note: str) -> None:
+        self.db.execute("UPDATE outbox SET status = 'confirmed', canvas_entry_id = ?, confirmed_at = ?, note = ? "
+                        "WHERE key = ?", (entry_id, self.now_iso(), note, key))
+        self.db.commit()
+
+    def abandon_post(self, key: str, note: str) -> None:
+        self.db.execute("UPDATE outbox SET status = 'abandoned', note = ? WHERE key = ?", (note, key))
+        self.db.commit()
+
+    def post_age(self, row) -> timedelta:
+        return self.clock() - parse_time(row["created_at"])
+
+    def post_times(self, since: datetime, exclude: str | None = None) -> list[datetime]:
+        """When each post that counts against the write limit was created: pending, confirmed, or abandoned
+        after it landed."""
+        rows = self.db.execute(
+            "SELECT created_at FROM outbox WHERE (status IN ('pending', 'confirmed') OR canvas_entry_id IS NOT NULL) "
+            "AND created_at > ? AND key != ?", (iso(since), exclude or ""))
+        return [parse_time(r[0]) for r in rows]
+
     # ------------------------------------------------------------------ TURN posts
 
     def turn_row(self, turn: int) -> sqlite3.Row | None:
-        return self.db.execute("SELECT * FROM turns WHERE turn = ?", (turn,)).fetchone()
+        return self.db.execute(TURN_JOIN + " WHERE t.turn = ?", (turn,)).fetchone()
 
     def turn_rows(self) -> list[sqlite3.Row]:
-        return self.db.execute("SELECT * FROM turns WHERE status != 'abandoned' ORDER BY turn").fetchall()
+        return self.db.execute(TURN_JOIN + " WHERE o.status != 'abandoned' ORDER BY t.turn").fetchall()
 
-    def pending_turns(self) -> list[sqlite3.Row]:
-        return self.db.execute("SELECT * FROM turns WHERE status = 'pending' ORDER BY turn").fetchall()
+    def add_turn(self, turn: int, game_id: int, record: dict, header: str, body: str, message_html: str,
+                 parent_entry_id: int | None) -> None:
+        self.db.execute("INSERT INTO turns(turn, game_id, record) VALUES (?, ?, ?)", (turn, game_id, json.dumps(record)))
+        self.add_post(f"turn:{turn}", "turn", parent_entry_id, header, body, message_html)
 
-    def add_turn(self, turn: int, game_id: int, record: dict, header: str, body: str, message_html: str) -> None:
+    # ------------------------------------------------------------------ hiring an auditor
+
+    def hires(self, game_id: int | None = None) -> list[sqlite3.Row]:
+        if game_id is None:
+            return self.db.execute("SELECT * FROM hires ORDER BY created_at").fetchall()
+        return self.db.execute("SELECT * FROM hires WHERE game_id = ? ORDER BY created_at", (game_id,)).fetchall()
+
+    def open_hires(self) -> list[sqlite3.Row]:
+        return self.db.execute("SELECT * FROM hires WHERE status = 'requested' ORDER BY created_at").fetchall()
+
+    def add_hire(self, token: str, game_id: int, provider_entry_id: int, provider_user_id: int, score: int,
+                 capabilities: list[str], expected: dict, deadline: datetime) -> None:
         self.db.execute(
-            "INSERT INTO turns(turn, game_id, record, header, body, message_html, status, attempts, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?)",
-            (turn, game_id, json.dumps(record), header, body, message_html, self.now_iso()))
+            "INSERT INTO hires(token, game_id, provider_entry_id, provider_user_id, score, capabilities, expected, "
+            "status, deadline, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'requested', ?, ?)",
+            (token, game_id, provider_entry_id, provider_user_id, score, json.dumps(capabilities),
+             json.dumps(expected), iso(deadline), self.now_iso()))
 
-    def bump_attempts(self, turn: int) -> None:
-        self.db.execute("UPDATE turns SET attempts = attempts + 1 WHERE turn = ?", (turn,))
+    def settle_hire(self, token: str, status: str, reply_entry_id: int | None = None,
+                    checks: list | None = None) -> None:
+        self.db.execute("UPDATE hires SET status = ?, reply_entry_id = ?, checks = ?, settled_at = ? WHERE token = ?",
+                        (status, reply_entry_id, json.dumps(checks) if checks is not None else None, self.now_iso(),
+                         token))
         self.db.commit()
 
-    def set_canvas_entry(self, turn: int, entry_id: int) -> None:
-        self.db.execute("UPDATE turns SET canvas_entry_id = ? WHERE turn = ?", (entry_id, turn))
+    def add_discovery(self, run_id: str, game_id: int | None, offers_seen: int, candidates: list[dict],
+                      chosen_entry_id: int | None) -> None:
+        self.db.execute("INSERT INTO discoveries(run_id, at, game_id, offers_seen, candidates, chosen_entry_id) "
+                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        (run_id, self.now_iso(), game_id, offers_seen, json.dumps(candidates), chosen_entry_id))
         self.db.commit()
 
-    def confirm_turn(self, turn: int, entry_id: int, note: str) -> None:
-        self.db.execute("UPDATE turns SET status = 'confirmed', canvas_entry_id = ?, confirmed_at = ?, note = ? "
-                        "WHERE turn = ?", (entry_id, self.now_iso(), note, turn))
-        self.db.commit()
-
-    def abandon_turn(self, turn: int, note: str) -> None:
-        self.db.execute("UPDATE turns SET status = 'abandoned', note = ? WHERE turn = ?", (note, turn))
-        self.db.commit()
-
-    def claimed_entry_ids(self) -> set[int]:
-        rows = self.db.execute("SELECT canvas_entry_id FROM turns WHERE canvas_entry_id IS NOT NULL")
-        return {row[0] for row in rows}
-
-    def turn_age(self, row) -> timedelta:
-        return self.clock() - parse_time(row["created_at"])
+    def discoveries(self) -> list[sqlite3.Row]:
+        return self.db.execute("SELECT * FROM discoveries ORDER BY id").fetchall()
 
     def offer_id(self) -> int | None:
         value = self.get_state("offer_entry_id")

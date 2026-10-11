@@ -17,9 +17,25 @@ season_start = "2026-10-12T09:00:00-04:00"
 season_end = "2026-10-14T20:00:00-04:00"
 
 [limits]
-# A TURN post that never showed up on Canvas is abandoned after this long, not posted late.
+# The forum's write limit. Every post counts: the offer, TURN posts and audit requests. Per hour means per
+# hour slot (the turns' hours); per day means any 24 hours. Code caps these at 2 and 30; set them to the
+# course's limit if it is stricter. When a limit is reached the turn waits (volleys stay queued), and so do
+# audit requests.
+max_posts_per_hour = 2
+max_posts_per_day = 30
+# A post that never showed up on Canvas is abandoned after this long, not posted late.
 pending_max_age_hours = 2
 max_post_attempts = 3
+
+[hire]
+# After every finished game the house hires an independent auditor found among the forum's service offers.
+enabled = true
+# A request expires this long after it is posted; the next suitable provider is asked instead.
+deadline_hours = 6
+max_providers_per_game = 2
+# Offers scoring below this are not suitable. Capabilities: hashing 3, computation 2, verification 1, so a
+# provider that can hash or compute qualifies, and a fact-check-only or unrelated service does not.
+min_score = 2
 
 [paths]
 # Relative paths resolve against the repo root (state/ is gitignored). In a container AGENT_DATA_DIR wins.

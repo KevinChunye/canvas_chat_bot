@@ -11,3 +11,6 @@ __pycache__/
 report.md
 state.json
 turn_post.txt
+.venv/
+ghost_fleet_report.md
+ghost_fleet_writeup.pdf
