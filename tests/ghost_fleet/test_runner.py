@@ -13,6 +13,7 @@ import pytest
 from agents.ghost_fleet import engine, sandbox, server
 from agents.ghost_fleet.filters import callsign_ok, post_violations
 from agents.ghost_fleet.parse import default_name, parse_reply
+from agents.ghost_fleet.report import build_report, build_writeup
 from agents.ghost_fleet.runner import post_offer, rebuild, to_html
 from agents.ghost_fleet.store import Store
 from canvas_core.text import content_hash
@@ -213,7 +214,7 @@ def test_season_end_reveals_the_unfinished_game_once(cfg, store, canvas, offer, 
     assert hashlib.sha256(reveal.encode()).hexdigest() == store.games()[0]["commit_hash"]
 
     clock.advance()
-    assert turn(cfg, store)["summary"] == "season is over"
+    assert turn(cfg, store)["summary"].startswith("season is over")
     assert len(posts_by_house(canvas, offer)) == 3                 # opening, turn 2, final reveal
     state = json.loads(cfg.state_json_path.read_text())
     assert state["season"]["status"] == "ENDED" and state["current"] is None
@@ -291,6 +292,18 @@ def test_sandbox_season_posts_clean_turns_and_never_leaks_a_live_layout(cfg, tmp
     state = (tmp_path / "sandbox" / "state.json").read_text()
     assert live.reveal not in state and "seed" not in state
     assert json.loads(state)["current"]["commit"] == live.commit
+
+    # hiring was rehearsed against the simulated peers: the lazy one rejected, the honest one accepted
+    scfg = sandbox.sandbox_config(cfg)
+    s = Store(scfg.db_path)
+    statuses = [h["status"] for h in s.hires()]
+    assert statuses[:2] == ["rejected", "accepted"] and s.discoveries()
+    assert any("AUDITS: G1 commitment holds" in (r["body"] or "") for r in s.turn_rows())
+    report = build_report(scfg, s)
+    pages = build_writeup(scfg, s, tmp_path / "writeup.pdf", sandbox=True)
+    s.close()
+    assert "entry_id=" in report and "| rejected |" in report and "| accepted |" in report
+    assert (tmp_path / "writeup.pdf").read_bytes().startswith(b"%PDF") and 1 <= pages <= 3
 
 
 def _commits(post: str) -> list[str]:

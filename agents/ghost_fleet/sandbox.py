@@ -1,6 +1,10 @@
 """A practice forum on your own machine. It stands in for Canvas with the same methods the runner calls, so a
-sandbox turn runs exactly the production code: parse replies, resolve, commit, post, verify. Nothing leaves the
-machine. State lives in state/ghost_fleet_sandbox/ (forum.json, the database, state.json, the spectator page).
+sandbox turn runs exactly the production code: parse replies, resolve, commit, post, verify, hire. Nothing leaves
+the machine. State lives in state/ghost_fleet_sandbox/ (forum.json, the database, state.json, the spectator page).
+
+Three simulated peers post service offers so hiring can be rehearsed: Quick Hash (looks capable, but copies the
+commitment instead of computing, so its audits fail), Ledger Lens (does the work) and a haiku service (unrelated).
+Peers read only the posted request text, and answer before the next sandbox turn.
 """
 
 import dataclasses
@@ -15,13 +19,23 @@ from canvas_core.env import CONTROL_LINE_RUNNING
 from canvas_core.canvas import GateClosed
 from canvas_core.text import first_nonempty_line, strip_html
 
-from . import engine
+from . import engine, hire
 from .config import OFFER_PATH, REPO_ROOT, SPECTATOR_PATH, Config
 from .runner import rebuild, run_turn, to_html, turn_of, turn_time
 from .store import Store
 
 SANDBOX_DIR = REPO_ROOT / "state" / "ghost_fleet_sandbox"
 HOUSE_ID, COURSE, TOPIC = 1, 1, 10
+PEERS = [  # (name, offer, how it answers an audit request)
+    ("quickhash", "SERVICE OFFER: Quick Hash. SHA-256 hashing, checksums and log audits, computed in Python.", "lazy"),
+    ("ledger", "SERVICE OFFER: Ledger Lens. I audit game logs: SHA-256 hash checks and recomputation in Python. "
+               "Reply with your data and a deadline.", "honest"),
+    ("haiku", "SERVICE OFFER: a haiku about your agent, one per request.", None),
+]
+
+
+def _html(text: str) -> str:
+    return "".join(f"<p>{html.escape(line)}</p>" for line in text.splitlines() if line.strip())
 
 
 class SandboxCanvas:
@@ -56,10 +70,34 @@ class SandboxCanvas:
             users[name] = 100 + len(users)
         return users[name]
 
-    def reply(self, name: str, text: str) -> int:
-        """A player's reply to the offer."""
-        message = "".join(f"<p>{html.escape(line)}</p>" for line in text.splitlines() if line.strip())
-        return self._add(self.user_id(name), message, self.data["offer_id"])["id"]
+    def reply(self, name: str, text: str, parent_id: int | None = None) -> int:
+        """A reply from user `name`: to the offer unless parent_id says otherwise."""
+        parent = parent_id if parent_id is not None else self.data["offer_id"]
+        return self._add(self.user_id(name), _html(text), parent)["id"]
+
+    def new_thread(self, name: str, text: str) -> int:
+        """A top-level post from user `name`, such as another service's offer."""
+        return self._add(self.user_id(name), _html(text), None)["id"]
+
+    def peers_work(self) -> list[int]:
+        """Each simulated peer answers audit requests posted under its offer, from the request text alone."""
+        answered = []
+        offers = {self.data["peer_offers"][name]: (name, how) for name, _, how in PEERS}
+        for entry in self._entries():
+            if entry["user_id"] != HOUSE_ID or entry["parent_id"] not in offers:
+                continue
+            name, how = offers[entry["parent_id"]]
+            peer = self.user_id(name)
+            if how is None or any(e["parent_id"] == entry["id"] and e["user_id"] == peer for e in self._entries()):
+                continue
+            request = hire.parse_request(strip_html(entry["message"]))
+            if request is None:
+                continue
+            answers = hire.expected_answers(request["token"], request["commit"], request["reveal"], request["shots"])
+            if how == "lazy":
+                answers = dict(answers, proof=request["commit"])
+            answered.append(self.reply(name, hire.answer_lines(request["token"], answers), parent_id=entry["id"]))
+        return answered
 
     # ------------------------------------------------------------------ the Canvas surface the runner uses
 
@@ -119,9 +157,11 @@ def reset(cfg: Config) -> Path:
     SANDBOX_DIR.mkdir(parents=True)
     forum = SANDBOX_DIR / "forum.json"
     forum.write_text(json.dumps({"now": (cfg.season_start - timedelta(minutes=30)).isoformat(), "seconds": 0,
-                                 "next_id": 5000, "entries": {}, "users": {}, "offer_id": None,
+                                 "next_id": 5000, "entries": {}, "users": {}, "offer_id": None, "peer_offers": {},
                                  "control": CONTROL_LINE_RUNNING}))
     canvas = SandboxCanvas(forum)
+    for name, text, _ in PEERS:
+        canvas.data["peer_offers"][name] = canvas.new_thread(name, text)
     offer = canvas.create_entry(TOPIC, to_html(OFFER_PATH.read_text()))
     canvas.data["offer_id"] = offer["id"]
     canvas.save()
@@ -147,6 +187,7 @@ def next_turn(cfg: Config) -> dict:
     """Move the sandbox clock to the top of the next hour and run one turn there."""
     canvas = open_forum(cfg)
     scfg = sandbox_config(cfg)
+    canvas.peers_work()
     turn = max(turn_of(cfg, canvas.now) + 1, 1)
     canvas.data["now"] = turn_time(cfg, turn).isoformat()
     canvas.data["seconds"] = 0

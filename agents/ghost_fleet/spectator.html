@@ -230,6 +230,7 @@ footer{font-size:13px;color:var(--ink-2)}
           <button class="btn small" type="button" id="cVerify" hidden>Verify reveal</button>
           <span class="checks" id="cVerifyOut"></span>
         </div>
+        <p class="note" id="cAudit" hidden></p>
       </section>
       <section class="panel" aria-labelledby="fdTitle">
         <h3 id="fdTitle">Ship's log</h3>
@@ -502,6 +503,19 @@ footer{font-size:13px;color:var(--ink-2)}
       $("#cReveal").hidden = false; $("#cVerify").hidden = false; $("#cVerify").dataset.game = String(g.id);
       fillVerify(out, g.id);
     }
+    renderAudit(g);
+  }
+
+  function renderAudit(g){
+    var node = $("#cAudit"), list = (S.audits || []).filter(function(a){ return a.game === g.id; });
+    node.hidden = !S.audits || g.live;
+    var done = list.find(function(a){ return a.status === "accepted"; });
+    var open = list.find(function(a){ return a.status === "requested"; });
+    node.textContent = done ? "Independent audit accepted (offer " + done.offer + "): commitment " +
+        (done.commit_matches ? "holds" : "broken") + ", " + done.mismatches + " mismatches."
+      : open ? "Independent audit requested from offer " + open.offer + "; waiting for the reply."
+      : list.length ? "No accepted independent audit yet (" + list.map(function(a){ return a.status; }).join(", ") + ")."
+      : "Independent audit: not requested yet.";
   }
 
   async function runVerify(id){

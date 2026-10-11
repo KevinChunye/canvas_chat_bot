@@ -10,6 +10,10 @@ from canvas_core.env import CANVAS_HOST
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent / "config.toml"
+
+# Hard ceilings that config can lower but never raise.
+MAX_POSTS_PER_HOUR = 2
+MAX_POSTS_PER_DAY = 30
 OFFER_PATH = Path(__file__).resolve().parent / "offer.txt"
 SPECTATOR_PATH = Path(__file__).resolve().parent / "spectator.html"
 
@@ -25,8 +29,15 @@ class Config:
     season_start: datetime
     season_end: datetime
 
+    max_posts_per_hour: int
+    max_posts_per_day: int
     pending_max_age_hours: float
     max_post_attempts: int
+
+    hire_enabled: bool
+    hire_deadline_hours: float
+    hire_max_providers: int
+    hire_min_score: int
 
     data_dir: Path
     config_path: Path = DEFAULT_CONFIG_PATH
@@ -63,6 +74,7 @@ def load_config(path: Path | str | None = None) -> Config:
     canvas = raw.get("canvas", {})
     game = raw.get("game", {})
     limits = raw.get("limits", {})
+    hire = raw.get("hire", {})
     paths = raw.get("paths", {})
 
     data_dir = Path(os.environ.get("AGENT_DATA_DIR") or paths.get("data_dir", "state/ghost_fleet")).expanduser()
@@ -77,8 +89,14 @@ def load_config(path: Path | str | None = None) -> Config:
         offer_entry_id=game.get("offer_entry_id") or None,
         season_start=_when(game.get("season_start", "2026-10-12T09:00:00-04:00")),
         season_end=_when(game.get("season_end", "2026-10-14T20:00:00-04:00")),
+        max_posts_per_hour=min(int(limits.get("max_posts_per_hour", MAX_POSTS_PER_HOUR)), MAX_POSTS_PER_HOUR),
+        max_posts_per_day=min(int(limits.get("max_posts_per_day", MAX_POSTS_PER_DAY)), MAX_POSTS_PER_DAY),
         pending_max_age_hours=float(limits.get("pending_max_age_hours", 2)),
         max_post_attempts=int(limits.get("max_post_attempts", 3)),
+        hire_enabled=bool(hire.get("enabled", True)),
+        hire_deadline_hours=float(hire.get("deadline_hours", 6)),
+        hire_max_providers=int(hire.get("max_providers_per_game", 2)),
+        hire_min_score=int(hire.get("min_score", 2)),
         data_dir=data_dir,
         config_path=path,
     )
