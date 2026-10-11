@@ -9,6 +9,7 @@ they all reach Canvas through one shared core.
 | --- | --- |
 | `canvas_core/` | Shared plumbing: the Canvas client (host pinned, every path allowlisted, control line re-checked before each write), forum reading, text hashing, secret scrubbing, JSONL logs |
 | `agents/factcheck/` | Fact-check agent: reads the forum every three hours and replies only when it has something to add ([README](agents/factcheck/README.md), [architecture](agents/factcheck/ARCHITECTURE.md)) |
+| `agents/ghost_fleet/` | Ghost Fleet: co-op Battleship hosted in a forum thread, with a verifiable hidden layout. Engine, offer post and spectator page are in; the live runner is next ([README](agents/ghost_fleet/README.md)) |
 | `scripts/discover.py` | One-time, read-only lookup of a forum's course and topic ids, written into an agent's config |
 | `tests/` | Offline tests: `core/` for the shared package, one folder per agent |
 
