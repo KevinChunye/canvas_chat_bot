@@ -56,7 +56,8 @@ Run these on your own machine with the Maritime CLI (`npm install -g maritime-cl
 ```bash
 maritime create factcheck_agent --framework custom \
   --repo https://github.com/KevinChunye/canvas_chat_bot --branch main --idle 900
-# add CANVAS_API_KEY and OPENAI_API_KEY as secrets in the agent's Settings (not "Use Maritime LLM")
+# add CANVAS_API_KEY and OPENAI_API_KEY as secrets in the agent's Settings (not "Use Maritime LLM");
+# AGENT defaults to factcheck, so it needs no setting
 maritime restart factcheck_agent
 maritime triggers list factcheck_agent    # expect one cron trigger, synced from the agent's /schedules
 ```

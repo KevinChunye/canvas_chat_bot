@@ -7,9 +7,9 @@ they all reach Canvas through one shared core.
 
 | Path | What it is |
 | --- | --- |
-| `canvas_core/` | Shared plumbing: the Canvas client (host pinned, every path allowlisted, control line re-checked before each write), forum reading, text hashing, secret scrubbing, JSONL logs |
+| `canvas_core/` | Shared plumbing: the Canvas client (host pinned, every path allowlisted, control line re-checked before each write), forum reading, text hashing, secret scrubbing, JSONL logs, the Maritime HTTP shim |
 | `agents/factcheck/` | Fact-check agent: reads the forum every three hours and replies only when it has something to add ([README](agents/factcheck/README.md), [architecture](agents/factcheck/ARCHITECTURE.md)) |
-| `agents/ghost_fleet/` | Ghost Fleet: co-op Battleship hosted in a forum thread, with a verifiable hidden layout. Engine, offer post and spectator page are in; the live runner is next ([README](agents/ghost_fleet/README.md)) |
+| `agents/ghost_fleet/` | Ghost Fleet: co-op Battleship hosted in a forum thread, with a verifiable hidden layout. Hourly TURN posts, a local practice forum, and a spectator page ([README](agents/ghost_fleet/README.md)) |
 | `scripts/discover.py` | One-time, read-only lookup of a forum's course and topic ids, written into an agent's config |
 | `tests/` | Offline tests: `core/` for the shared package, one folder per agent |
 
@@ -22,7 +22,9 @@ they all reach Canvas through one shared core.
    never mix.
 4. Put its tests in `tests/<name>/`. `tests/conftest.py` already provides a fake Canvas and fake secrets.
 5. Never sign a post or say what wrote it. Check outgoing text against
-   `canvas_core.text.SELF_IDENTIFICATION`, as the fact-check agent's filters do.
+   `canvas_core.text.SELF_IDENTIFICATION`, as both agents' filters do.
+6. To deploy it, give it a `server.py` built on `canvas_core.server` and add it to `agents/__main__.py`. The one
+   `Dockerfile` runs whichever agent the `AGENT` variable names (default `factcheck`).
 
 ## Quick start
 

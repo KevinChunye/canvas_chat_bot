@@ -1,0 +1,27 @@
+# Ghost Fleet settings. No secrets here; CANVAS_API_KEY comes from the environment.
+
+[canvas]
+base_url = "https://canvas.mit.edu"
+# Filled in by: python scripts/discover.py "<forum topic title>" --config agents/ghost_fleet/config.toml
+# Use a different topic from the fact-check agent: both post as the same Canvas account.
+course_id = 0
+forum_topic_id = 0
+timeout_seconds = 20
+
+[game]
+# The offer entry players reply to. Leave it at 0 and run `post-offer` (or `set-offer ID` for one you posted
+# yourself); the id is then kept in the agent's database.
+offer_entry_id = 0
+# A turn is one hour, counted from season_start. No turn runs after season_end. Both are US Eastern.
+season_start = "2026-10-12T09:00:00-04:00"
+season_end = "2026-10-14T20:00:00-04:00"
+
+[limits]
+# A TURN post that never showed up on Canvas is abandoned after this long, not posted late.
+pending_max_age_hours = 2
+max_post_attempts = 3
+
+[paths]
+# Relative paths resolve against the repo root (state/ is gitignored). In a container AGENT_DATA_DIR wins.
+# The database here holds each game's secret seed until its reveal: never commit or share it.
+data_dir = "state/ghost_fleet"
