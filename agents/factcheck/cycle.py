@@ -6,17 +6,21 @@ import sys
 import time
 from dataclasses import dataclass
 
+from canvas_core.canvas import Canvas, CanvasAuthError, LostAck
+from canvas_core.env import canvas_token, openai_key, secret_values
+from canvas_core.forum import fetch_forum, own_replied_targets
+from canvas_core.log import CycleLog
+from canvas_core.text import content_hash, max_similarity, scrub, to_html, truncate, word_count
+from canvas_core.times import parse_time
+
 from .actions import Writer, spacing_block
 from .budget import BudgetExhausted, BudgetRefused, Ledger
-from .canvas import Canvas, CanvasAuthError, LostAck
-from .config import Config, canvas_token, openai_key, secret_values
-from .forum import (build_thread_blocks, exchanges_with_author, fetch_forum, find_candidates, newest,
-                    own_replied_targets)
+from .candidates import build_thread_blocks, exchanges_with_author, find_candidates, newest
+from .config import Config
+from .filters import output_violations
 from .llm import MalformedDecision, calibrate, call, new_nonce, openai_complete, parse_decision, system_prompt, \
     user_prompt
-from .log import CycleLog
-from .store import Store, parse_time
-from .text import content_hash, max_similarity, output_violations, scrub, to_html, truncate, word_count
+from .store import Store
 
 HALT_AFTER_FAILURES = 3
 
@@ -25,7 +29,10 @@ BLUNT_WRONG = re.compile(
     r"|plainly\s+|dead\s+)?(wrong|false|incorrect|untrue|a myth)\b|\bnot true\b|\bdebunked\b",
     re.IGNORECASE,
 )
-SIGNATURE_TAIL = re.compile(r"\s*[—–-]{1,2}\s*[^\n]{0,40}\ban agent\.?\s*$", re.IGNORECASE)
+# A trailing byline such as "— Name, an agent" or "- a bot". Posts are never signed, so one the model
+# adds is cut, and bodies stored before signing was removed are compared without it.
+SIGNATURE_TAIL = re.compile(r"\s*[—–-]{1,2}\s*[^\n]{0,40}\ban? (?:ai |autonomous )?(?:agent|bot|ai)\b[.)]*\s*$",
+                            re.IGNORECASE)
 
 
 @dataclass
@@ -33,13 +40,9 @@ class Plan:
     kind: str                    # reply | thread
     target_entry_id: int | None
     thread_root_id: int | None
-    body: str                    # plain text, signature included when sign_posts is on
+    body: str                    # plain text, exactly as posted
     message_html: str
     content_hash: str
-
-
-def signature(cfg: Config) -> str:
-    return f"— {cfg.agent_name}, an agent"
 
 
 def strip_signature(body: str) -> str:
@@ -91,8 +94,7 @@ def check_post(post: dict, claims: list[dict], entries: dict, self_id: int, stor
     words = word_count(body)
     if not cfg.min_words <= words <= cfg.max_words:
         reasons.append(f"length {words} words outside {cfg.min_words}-{cfg.max_words}")
-    full = f"{body}\n\n{signature(cfg)}" if cfg.sign_posts else body
-    reasons += [f"output filter: {r}" for r in output_violations(full, secrets)]
+    reasons += [f"output filter: {r}" for r in output_violations(body, secrets)]
 
     relevant = [c for c in claims if target is None or c["entry_id"] == target]
     if BLUNT_WRONG.search(body) and not any(c["verdict"] == "wrong" for c in relevant):
@@ -106,8 +108,8 @@ def check_post(post: dict, claims: list[dict], entries: dict, self_id: int, stor
 
     if reasons:
         return None, reasons
-    message_html = to_html(full)
-    return Plan(kind, target, root, full, message_html, content_hash(message_html)), []
+    message_html = to_html(body)
+    return Plan(kind, target, root, body, message_html, content_hash(message_html)), []
 
 
 class Cycle:
@@ -298,7 +300,7 @@ def run_cycle(cfg: Config, dry_run: bool = False, *, canvas=None, complete=None,
     try:
         reason = store.halt_reason()
         if reason:
-            print(f"halted: {reason}. Clear with: python -m agent.cli unhalt", file=sys.stderr)
+            print(f"halted: {reason}. Clear with: python -m agents.factcheck.cli unhalt", file=sys.stderr)
             return {"outcome": "halted", "summary": reason}
         if cfg.course_id is None or cfg.forum_topic_id is None:
             raise RuntimeError("course_id/forum_topic_id missing from config; run scripts/discover.py")

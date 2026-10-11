@@ -2,8 +2,8 @@ import dataclasses
 
 import pytest
 
-from agent.budget import BudgetExhausted, BudgetRefused, Ledger
-from agent.config import load_config
+from agents.factcheck.budget import BudgetExhausted, BudgetRefused, Ledger
+from agents.factcheck.config import load_config
 
 
 def test_reserve_books_worst_case_then_actual(cfg, store):

@@ -1,6 +1,6 @@
 import pytest
 
-from agent.canvas import Canvas, CanvasAuthError, GateClosed, Forbidden
+from canvas_core.canvas import Canvas, CanvasAuthError, GateClosed, Forbidden
 from tests.conftest import COURSE, FAKE_CANVAS_KEY, OTHER_TOPIC, SELF_ID, TOPIC, no_sleep
 
 
@@ -124,7 +124,7 @@ def test_get_retries_transient_errors_with_bounded_attempts(requests_mock):
 
 
 def test_canvas_throttle_403_is_transient_not_a_halt(requests_mock):
-    from agent.canvas import CanvasTransientError
+    from canvas_core.canvas import CanvasTransientError
     requests_mock.get("https://canvas.mit.edu/api/v1/users/self", status_code=403,
                       text="403 Forbidden (Rate Limit Exceeded)")
     with pytest.raises(CanvasTransientError):

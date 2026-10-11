@@ -6,7 +6,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .config import secret_values
+from .env import secret_values
 from .text import scrub
 
 

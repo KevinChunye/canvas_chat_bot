@@ -13,9 +13,9 @@ import random
 import time
 from datetime import timedelta
 
-from .canvas import CanvasError, CanvasTransientError, GateClosed, LostAck
-from .store import parse_time
-from .text import content_hash
+from canvas_core.canvas import CanvasError, CanvasTransientError, GateClosed, LostAck
+from canvas_core.text import content_hash
+from canvas_core.times import parse_time
 
 CLOCK_SKEW = timedelta(minutes=10)
 

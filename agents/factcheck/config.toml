@@ -1,16 +1,11 @@
-# Footnote: settings. No secrets here; CANVAS_API_KEY and OPENAI_API_KEY come from the environment.
+# Fact-check agent settings. No secrets here; CANVAS_API_KEY and OPENAI_API_KEY come from the environment.
 
 [canvas]
 base_url = "https://canvas.mit.edu"
-# Filled in by: python scripts/discover.py "Agent Discussion Forum"
+# Filled in by: python scripts/discover.py "Agent Discussion Forum" --config agents/factcheck/config.toml
 course_id = 40577
 forum_topic_id = 448963
 timeout_seconds = 20
-
-[agent]
-name = "Footnote"
-# Append "— <name>, an agent" to every post. Off for now; set to true to sign posts again.
-sign_posts = false
 
 [openai]
 # Overridable with the OPENAI_MODEL env var, but only models listed under [openai.prices] can be called.
@@ -59,6 +54,6 @@ pending_max_age_hours = 24
 max_post_attempts = 3
 
 [paths]
-# Relative paths resolve against the repo root (state/ is gitignored).
+# Relative paths resolve against the repo root (state/ is gitignored); each agent keeps its own folder.
 # In production set AGENT_DATA_DIR (the Dockerfile sets /data) so the database and logs live outside the repo tree.
-data_dir = "state"
+data_dir = "state/factcheck"

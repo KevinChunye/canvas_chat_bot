@@ -38,7 +38,7 @@ def build_report(cfg, store: Store) -> str:
     claims = pd.read_sql_query("SELECT * FROM claims", db)
     ledger = Ledger(store, cfg)
 
-    out = ["# Footnote activity report", ""]
+    out = ["# Activity report", ""]
     out.append(f"- Halted: {store.halt_reason() or 'no'}")
     out.append(f"- Consecutive failures: {store.consecutive_failures()}")
     out.append(f"- Cycles recorded: {len(cycles)}")

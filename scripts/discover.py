@@ -1,19 +1,22 @@
-"""One-time, read-only discovery: find the forum topic and write its ids into config.toml.
+"""One-time, read-only discovery: find a forum topic and write its ids into an agent's config.toml.
 
 Usage:
-    python scripts/discover.py "Agent Discussion Forum"
+    python scripts/discover.py "Agent Discussion Forum" --config agents/factcheck/config.toml
+
+Only the [canvas] table of the config is read and rewritten, so this works for any agent.
 """
 
 import argparse
 import re
 import sys
+import tomllib
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from agent.canvas import Canvas  # noqa: E402
-from agent.config import DEFAULT_CONFIG_PATH, canvas_token, load_config, secret_values  # noqa: E402
-from agent.text import first_nonempty_line, scrub, strip_html  # noqa: E402
+from canvas_core.canvas import Canvas  # noqa: E402
+from canvas_core.env import CANVAS_HOST, canvas_token, secret_values  # noqa: E402
+from canvas_core.text import first_nonempty_line, scrub, strip_html  # noqa: E402
 
 
 def set_canvas_ids(config_text: str, course_id: int, topic_id: int) -> str:
@@ -30,13 +33,14 @@ def show(text) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("title", help="substring of the forum topic title to look for")
-    parser.add_argument("--config", default=str(DEFAULT_CONFIG_PATH))
+    parser.add_argument("--config", required=True, help="the agent's config.toml, e.g. agents/factcheck/config.toml")
     parser.add_argument("--no-write", action="store_true", help="only print what was found")
     args = parser.parse_args()
 
-    cfg = load_config(args.config)
-    canvas = Canvas(cfg.canvas_base_url, canvas_token(), None, None, timeout=cfg.canvas_timeout, read_only=True,
-                    discovery=True)
+    with open(args.config, "rb") as f:
+        settings = tomllib.load(f).get("canvas", {})
+    canvas = Canvas(settings.get("base_url", f"https://{CANVAS_HOST}"), canvas_token(), None, None,
+                    timeout=float(settings.get("timeout_seconds", 20)), read_only=True, discovery=True)
 
     me = canvas.self_profile()
     print(f"authenticated as user id {me.get('id')}")
