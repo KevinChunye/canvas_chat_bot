@@ -56,8 +56,7 @@ class SandboxCanvas:
     def _add(self, user_id: int, message: str, parent_id: int | None) -> dict:
         entry_id = self.data["next_id"]
         self.data["next_id"] += 1
-        self.data["seconds"] += 1        # keeps posting order strict within one sandbox minute
-        stamp = (self.now + timedelta(seconds=self.data["seconds"])).isoformat()
+        stamp = self.now.isoformat()     # the sandbox clock stands still during a turn; ids keep posting order
         entry = {"id": entry_id, "user_id": user_id, "parent_id": parent_id, "created_at": stamp,
                  "updated_at": stamp, "message": message}
         self.data["entries"][str(entry_id)] = entry
@@ -156,7 +155,7 @@ def reset(cfg: Config) -> Path:
         shutil.rmtree(SANDBOX_DIR)
     SANDBOX_DIR.mkdir(parents=True)
     forum = SANDBOX_DIR / "forum.json"
-    forum.write_text(json.dumps({"now": (cfg.season_start - timedelta(minutes=30)).isoformat(), "seconds": 0,
+    forum.write_text(json.dumps({"now": (cfg.season_start - timedelta(minutes=30)).isoformat(),
                                  "next_id": 5000, "entries": {}, "users": {}, "offer_id": None, "peer_offers": {},
                                  "control": CONTROL_LINE_RUNNING}))
     canvas = SandboxCanvas(forum)
@@ -190,7 +189,6 @@ def next_turn(cfg: Config) -> dict:
     canvas.peers_work()
     turn = max(turn_of(cfg, canvas.now) + 1, 1)
     canvas.data["now"] = turn_time(cfg, turn).isoformat()
-    canvas.data["seconds"] = 0
     canvas.save()
     store = Store(scfg.db_path, clock=lambda: canvas.now)
     try:

@@ -2,10 +2,10 @@
 
 [canvas]
 base_url = "https://canvas.mit.edu"
-# Filled in by: python scripts/discover.py "<forum topic title>" --config agents/ghost_fleet/config.toml
-# Use a different topic from the fact-check agent: both post as the same Canvas account.
-course_id = 0
-forum_topic_id = 0
+# The course's agent services forum, where every service posts its offer as a new thread.
+# The fact-check agent posts in another topic of the same course with the same account.
+course_id = 40577
+forum_topic_id = 449948
 timeout_seconds = 20
 
 [game]
@@ -17,12 +17,13 @@ season_start = "2026-10-12T09:00:00-04:00"
 season_end = "2026-10-14T20:00:00-04:00"
 
 [limits]
-# The forum's write limit. Every post counts: the offer, TURN posts and audit requests. Per hour means per
-# hour slot (the turns' hours); per day means any 24 hours. Code caps these at 2 and 30; set them to the
-# course's limit if it is stricter. When a limit is reached the turn waits (volleys stay queued), and so do
-# audit requests.
-max_posts_per_hour = 2
-max_posts_per_day = 30
+# The course allows at most 3 write attempts per rolling hour per student, across all of its discussions, and
+# retries count. Every POST attempt this agent makes counts here: the offer, TURN posts, audit requests and any
+# retry, plus every entry of ours already in the topic. Code never allows more than 3 per hour or 48 per day.
+# 2 per hour leaves room for one post of your own elsewhere in the course. When a limit is reached the turn
+# waits (volleys stay queued) and so do audit requests; the next run inside the hour posts them.
+max_writes_per_hour = 2
+max_writes_per_day = 36
 # A post that never showed up on Canvas is abandoned after this long, not posted late.
 pending_max_age_hours = 2
 max_post_attempts = 3

@@ -10,7 +10,7 @@
     python -m agents.ghost_fleet.cli dry-run [--at TIME]   read the forum, print the TURN post it would make; no writes
     python -m agents.ghost_fleet.cli post-offer            post offer.txt as a new thread, once
     python -m agents.ghost_fleet.cli set-offer ENTRY_ID    use an offer you already posted
-    python -m agents.ghost_fleet.cli run-turn              one live turn (what the hourly schedule runs)
+    python -m agents.ghost_fleet.cli run-turn              one live run (what the schedule runs every 10 minutes)
     python -m agents.ghost_fleet.cli status                halt state, offer, games, audits, pending posts, runs
     python -m agents.ghost_fleet.cli unhalt                clear the halt flag and the failure count
 

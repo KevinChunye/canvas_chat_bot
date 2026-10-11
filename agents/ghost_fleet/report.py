@@ -96,6 +96,10 @@ def _check_cells(h: dict) -> list[str]:
             for name in ("proof", "commit", "rows", "mismatches")]
 
 
+def _why_not(candidate: dict) -> str:
+    return candidate.get("reason") or "unsuitable"
+
+
 # ---------------------------------------------------------------------------- markdown
 
 def build_report(cfg: Config, store: Store) -> str:
@@ -106,10 +110,11 @@ def build_report(cfg: Config, store: Store) -> str:
     out.append(f"- TURN posts: {len(ev['turns_confirmed'])} confirmed of {len(ev['turns'])}")
     out.append(f"- Volleys: {ev['volleys'] or 'none'}")
     out.append(f"- Runs by outcome: {ev['runs'] or 'none'}; halted: {ev['halted'] or 'no'}")
-    out += ["", "## Discovery scans", "", "| at | game | offers read | chosen | candidates (entry: score, suitable) |",
+    out += ["", "## Discovery scans", "", "| at | game | offers read | chosen | candidates (entry: score, why not) |",
             "| --- | --- | --- | --- | --- |"]
     for d in ev["discoveries"]:
-        cands = ", ".join(f"{c['entry_id']}: {c['score']}{'' if c['suitable'] else ' (no)'}" for c in d["candidates"])
+        cands = ", ".join(f"{c['entry_id']}: {c['score']}{'' if c['suitable'] else f' ({_why_not(c)})'}"
+                          for c in d["candidates"])
         chosen = link(cfg, d["chosen_entry_id"]) if d["chosen_entry_id"] else "none suitable"
         out.append(f"| {d['at']} | {d['game_id']} | {d['offers_seen']} | {chosen} | {cands or '-'} |")
     out += ["", "## Audit requests, replies and checks", "",
@@ -196,14 +201,17 @@ def build_writeup(cfg: Config, store: Store, path, sandbox: bool = False) -> int
     request = request or example_request(cfg, store)
     story += [p("2. Technical setup", h2)]
     story += bullets([
-        "Python 3.11 with SQLite memory and one scheduled run per hour (a Maritime cron trigger, or cron). No "
+        "Python 3.11 with SQLite memory and a scheduled run every 10 minutes (a Maritime cron trigger, or a loop); "
+        "the first run in each hour with room under the write limit posts that hour's turn. No "
         "language model is used, so model spend is zero.",
         "All Canvas traffic goes through one client pinned to canvas.mit.edu that allows only GET and POST, only "
         "inside the configured discussion topic. There is no edit or delete call.",
         "Each run: settle pending posts, read the course control line, read the topic once, settle open audit "
         "requests, resolve and post this hour's turn, request at most one new audit, write the spectator data.",
         f"<b>Discovery.</b> Every top-level offer except ours is scored on the capabilities the audit needs: hashing "
-        f"(3), computation (2) and verification (1). Offers under {cfg.hire_min_score} are unsuitable. The rest rank by "
+        f"(3), computation (2) and verification (1), counting only sentences that offer something (not \"I will "
+        f"not run code\" or \"I check this forum hourly\"). Offers under {cfg.hire_min_score} are unsuitable, and so "
+        f"is a provider with two failed audits and none accepted. The rest rank by "
         f"score, then track record (accepted minus failed audits), then age. No provider is hard-coded, and every "
         f"scan is stored with each candidate's score ({len(scans)} scans so far).",
         f"<b>Delegation.</b> The request is a reply to the chosen offer and carries everything needed: inputs "
@@ -257,7 +265,7 @@ def build_writeup(cfg: Config, store: Store, path, sandbox: bool = False) -> int
                 rows.append(["...", "", "", "", f"{len(scans) - 6} more scans in the evidence report"])
                 continue
             cands = "; ".join(f"{c['entry_id']}, {c['score']} ({'/'.join(c['capabilities']) or 'none'})"
-                              + ("" if c["suitable"] else ", unsuitable") for c in d["candidates"][:3])
+                              + ("" if c["suitable"] else f", {_why_not(c)}") for c in d["candidates"][:3])
             rows.append([d["at"][:16].replace("T", " "), str(d["game_id"]), str(d["offers_seen"]),
                          p(a(d["chosen_entry_id"]) if d["chosen_entry_id"] else "none suitable", small),
                          p(cands or "-", small)])
@@ -275,8 +283,9 @@ def build_writeup(cfg: Config, store: Store, path, sandbox: bool = False) -> int
         f"zero. At most one new request per run and {cfg.hire_max_providers} providers per game.",
         "<b>Forum control.</b> The control line is read every run and re-checked immediately before every POST. "
         "Anything other than RUNNING stops all writes.",
-        f"<b>Write limit.</b> Every post (offer, TURN, request) counts: at most {cfg.max_posts_per_hour} per hour "
-        f"and {cfg.max_posts_per_day} per day, checked before a turn resolves, before a request and right before "
+        f"<b>Write limit.</b> The course allows 3 write attempts per rolling hour per student. Every POST attempt "
+        f"(offer, TURN, request, retry) counts: at most {cfg.max_writes_per_hour} in any rolling hour and "
+        f"{cfg.max_writes_per_day} in any 24 hours, checked before a turn resolves, before a request and right before "
         f"each POST. Counts come from both the database and the forum.",
         "<b>Verified posts and no duplicates.</b> Every post is committed to an outbox, POSTed, then re-fetched by "
         "id and matched by author and header line. After an unknown outcome the agent searches for the post before "

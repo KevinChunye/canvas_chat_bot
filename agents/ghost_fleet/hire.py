@@ -1,7 +1,9 @@
 """Hiring an independent auditor for every finished game.
 
 Discovery   Read the other service offers in the forum and score each against the capabilities the audit
-            needs (hashing, computation, verification). No partner is hard-coded, and every scan is logged.
+            needs (hashing, computation, verification), counting only sentences that offer something: not
+            "I will not run code" or "I check this forum hourly". No partner is hard-coded, every scan is
+            logged, and a provider with two failed audits and none accepted is not asked again.
 Delegation  Post one self-contained request as a reply to the chosen offer: inputs, expected result, checks
             and a deadline. Later scheduled runs pick up the reply. A provider is never asked twice about the
             same game, and after a failure or an expired deadline the next suitable provider is asked.
@@ -26,6 +28,13 @@ CAPABILITIES = [
     ("verification", 1, re.compile(r"\baudit|\bverif|\bvalidat|\bcheck|\breview", re.I)),
 ]
 OFFER_MARKER = re.compile(r"\b(offers?|services?|hire|request)\b", re.I)
+# Sentences that say what a service will not do, or when it reads the forum, are not capabilities: "I will not
+# run code you send" offers no computation, and "I check this thread hourly" offers no verification.
+SENTENCE = re.compile(r"[.!?;]+(?:\s|$)|\n")
+NEGATED = re.compile(r"\b(?:not|never|no|cannot|won[’']t|don[’']t|doesn[’']t|can[’']t|isn[’']t)\b", re.I)
+AVAILABILITY = re.compile(r"\bavailability\s*:|\b(?:check|checks|checking|monitor|monitors|read|reads|visit|visits)"
+                          r"\b[^.\n]{0,30}\b(?:thread|forum|topic|discussion|canvas)\b|\bevery\b[^.\n]{0,20}"
+                          r"\b(?:hours?|days?|minutes?)\b", re.I)
 
 PROOF_LINE = re.compile(r"^\s*PROOF\s*:\s*([0-9a-fA-F]{64})\s*$", re.M | re.I)
 COMMIT_LINE = re.compile(r"^\s*COMMIT MATCHES\s*:\s*(YES|NO)\s*$", re.M | re.I)
@@ -39,23 +48,34 @@ def sha256(text: str) -> str:
 
 # ---------------------------------------------------------------------------- discovery
 
+def capability_text(text: str) -> str:
+    """The offer's sentences that can claim a capability: not negated, and not about availability."""
+    return "\n".join(part for part in SENTENCE.split(text or "")
+                     if part.strip() and not NEGATED.search(part) and not AVAILABILITY.search(part))
+
+
 def score_offer(text: str) -> tuple[int, list[str]]:
     """Capability score of an offer, and which of our capability labels it matched."""
-    matched = [name for name, _, pattern in CAPABILITIES if pattern.search(text or "")]
+    claims = capability_text(text)
+    matched = [name for name, _, pattern in CAPABILITIES if pattern.search(claims)]
     return sum(weight for name, weight, _ in CAPABILITIES if name in matched), matched
 
 
-def discover(entries: dict, self_id: int, min_score: int, tried_users: set[int],
-             record: dict[int, int]) -> tuple[int, list[dict]]:
+def discover(entries: dict, self_id: int, min_score: int, tried_users: set[int], record: dict[int, int],
+             barred: set[int] = frozenset()) -> tuple[int, list[dict]]:
     """Every top-level offer in the topic that is not ours, scored. Suitable offers come first: highest score,
-    then the best track record (accepted minus failed audits), then the oldest offer."""
+    then the best track record (accepted minus failed audits), then the oldest offer. Unsuitable ones say why."""
     offers = [e for e in entries.values() if e["parent_id"] is None and not e["deleted"]
               and e["user_id"] not in (None, self_id) and OFFER_MARKER.search(e["text"] or "")]
     candidates = []
     for e in offers:
         score, caps = score_offer(e["text"])
+        reason = (f"score under {min_score}" if score < min_score
+                  else "already asked about this game" if e["user_id"] in tried_users
+                  else "failed audits, none accepted" if e["user_id"] in barred
+                  else "suitable")
         candidates.append({"entry_id": e["id"], "user_id": e["user_id"], "score": score, "capabilities": caps,
-                           "suitable": score >= min_score and e["user_id"] not in tried_users,
+                           "suitable": reason == "suitable", "reason": reason,
                            "record": record.get(e["user_id"], 0), "created_at": e["created_at"]})
     candidates.sort(key=lambda c: (not c["suitable"], -c["score"], -c["record"], c["created_at"] or "",
                                    c["entry_id"]))
