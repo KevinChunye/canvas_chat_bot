@@ -303,7 +303,7 @@ def test_sandbox_season_posts_clean_turns_and_never_leaks_a_live_layout(cfg, tmp
     pages = build_writeup(scfg, s, tmp_path / "writeup.pdf", sandbox=True)
     s.close()
     assert "entry_id=" in report and "| rejected |" in report and "| accepted |" in report
-    assert (tmp_path / "writeup.pdf").read_bytes().startswith(b"%PDF") and 1 <= pages <= 3
+    assert (tmp_path / "writeup.pdf").read_bytes().startswith(b"%PDF") and 2 <= pages <= 3
 
 
 def _commits(post: str) -> list[str]:
