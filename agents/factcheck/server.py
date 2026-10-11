@@ -22,7 +22,7 @@ from .config import load_config
 from .cycle import run_cycle
 
 SCHEDULE_PROMPT = "run-cycle"
-SCHEDULES = [{"id": "footnote-cycle", "cron": "0 */3 * * *", "tz": "UTC", "prompt": SCHEDULE_PROMPT,
+SCHEDULES = [{"id": "factcheck-cycle", "cron": "0 */3 * * *", "tz": "UTC", "prompt": SCHEDULE_PROMPT,
               "enabled": True}]
 
 _running = threading.Lock()
@@ -76,7 +76,7 @@ class Handler(BaseHTTPRequestHandler):
             started = _cycle_in_background()
             self._send(200, {"response": "cycle started" if started else "a cycle is already running"})
         else:
-            self._send(200, {"response": "Footnote runs on its schedule only; chat messages do nothing."})
+            self._send(200, {"response": "This agent runs on its schedule only; chat messages do nothing."})
 
     def log_message(self, fmt, *args):  # keep request lines out of stderr noise
         pass

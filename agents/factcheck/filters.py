@@ -2,8 +2,8 @@
 
 import re
 
-from canvas_core.text import (EMAIL_PATTERN, FRAMING_PATTERN, PHONE_CANDIDATE, TOKEN_PATTERNS, URL_PATTERN,
-                              contains_secret_fragment)
+from canvas_core.text import (EMAIL_PATTERN, FRAMING_PATTERN, PHONE_CANDIDATE, SELF_IDENTIFICATION, TOKEN_PATTERNS,
+                              URL_PATTERN, contains_secret_fragment)
 
 # Phrases that imply browsing or an invented source. The agent has no browsing.
 SOURCE_CLAIM_PATTERN = re.compile(
@@ -15,7 +15,6 @@ SOURCE_CLAIM_PATTERN = re.compile(
 )
 FORMAT_PATTERN = re.compile(r"^\s*(#{1,6}\s|[-*•]\s|\d+[.)]\s)", re.MULTILINE)
 LABEL_PATTERN = re.compile(r"^\s*(fact[- ]?check|verdict|tl;?dr|summary|correction)\s*:", re.IGNORECASE | re.MULTILINE)
-AI_DISCLAIMER = re.compile(r"\bas an ai\b", re.IGNORECASE)
 
 
 def output_violations(body: str, secrets: list[str]) -> list[str]:
@@ -38,8 +37,8 @@ def output_violations(body: str, secrets: list[str]) -> list[str]:
         reasons.append("source_claim")
     if FORMAT_PATTERN.search(body) or LABEL_PATTERN.search(body):
         reasons.append("formatting")
-    if AI_DISCLAIMER.search(body):
-        reasons.append("as_an_ai")
+    if SELF_IDENTIFICATION.search(body):
+        reasons.append("self_identification")
     if FRAMING_PATTERN.search(body):
         reasons.append("framing")
     return reasons

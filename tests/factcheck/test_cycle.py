@@ -1,8 +1,11 @@
 import dataclasses
 import json
 
+import pytest
+
 from agents.factcheck.cli import main as cli_main
-from agents.factcheck.cycle import run_cycle
+from agents.factcheck.config import load_config
+from agents.factcheck.cycle import run_cycle, strip_signature
 from agents.factcheck.report import build_report
 from agents.factcheck.store import Store
 from canvas_core.text import content_hash, to_html
@@ -33,7 +36,7 @@ def test_post_is_verified_and_confirmed(cfg, store, canvas):
     assert result["outcome"] == "posted"
     [mine] = canvas.by_agent()
     assert mine["parent_id"] == reply
-    assert "— Footnote, an agent" in mine["message"]          # test config leaves sign_posts at its default
+    assert mine["message"] == to_html(GOOD_BODY)                # exactly the body: no byline, no signature
     action = store.db.execute("SELECT * FROM actions").fetchone()
     assert action["status"] == "confirmed" and action["canvas_entry_id"] == mine["id"]
     assert len(store.seen_map()) == 2
@@ -129,7 +132,7 @@ def test_failed_post_that_never_landed_is_retried_with_backoff(cfg, store, canva
 
 def test_restart_with_pending_action_that_never_posted(cfg, store, canvas):
     _, reply = seed_thread(canvas)
-    body = GOOD_BODY + "\n\n— Footnote, an agent"
+    body = GOOD_BODY
     html = to_html(body)
     store.add_action("crashed", "reply", reply, canvas.entries[reply]["parent_id"], body, html, content_hash(html))
     store.close()
@@ -144,7 +147,7 @@ def test_restart_with_pending_action_that_never_posted(cfg, store, canvas):
 
 def test_restart_with_pending_action_that_did_post(cfg, store, canvas):
     root, reply = seed_thread(canvas)
-    body = GOOD_BODY + "\n\n— Footnote, an agent"
+    body = GOOD_BODY
     html = to_html(body)
     store.add_action("crashed", "reply", reply, root, body, html, content_hash(html))
     canvas.add(SELF_ID, "placeholder", parent_id=reply, minutes_ago=0)
@@ -162,7 +165,7 @@ def test_restart_with_pending_action_that_did_post(cfg, store, canvas):
 
 def test_pending_action_is_not_posted_while_gate_is_paused(cfg, store, canvas):
     _, reply = seed_thread(canvas)
-    body = GOOD_BODY + "\n\n— Footnote, an agent"
+    body = GOOD_BODY
     html = to_html(body)
     store.add_action("c0", "reply", reply, reply, body, html, content_hash(html))
     canvas.control = "<p>COURSE-TEAM CONTROL: PAUSED</p>"
@@ -448,7 +451,7 @@ def test_one_reply_per_thread_per_cycle(cfg, store, canvas):
     cfg = no_spacing(cfg)                     # isolate this rule from the 48h spacing
     root, reply = seed_thread(canvas)
     other = canvas.add(200, "a second reply in the same thread", parent_id=root, minutes_ago=100)
-    body = OTHER_BODY + "\n\n— Footnote, an agent"
+    body = OTHER_BODY
     html = to_html(body)
     store.add_action("crashed", "reply", other, root, body, html, content_hash(html))   # retried at reconcile
     result = cycle(cfg, store, FakeLLM(post_decision(reply)))
@@ -465,15 +468,26 @@ def test_definite_canvas_rejection_abandons_instead_of_retrying(cfg, store, canv
     assert store.pending_actions() == [] and len(canvas.posts()) == 1
 
 
-def test_signature_follows_config(cfg, store, canvas):
+def test_posts_are_never_signed(cfg, store, canvas, tmp_path):
     root, reply = seed_thread(canvas)
-    unsigned = dataclasses.replace(cfg, sign_posts=False)
-    body = GOOD_BODY + "\n\n— Footnote, an agent"                  # model signs anyway: stripped
-    assert cycle(unsigned, store, FakeLLM(post_decision(reply, body=body)))["outcome"] == "posted"
+    legacy = tmp_path / "legacy.toml"                              # an old config that still asks for a signature
+    legacy.write_text(cfg.config_path.read_text() + '\n[agent]\nname = "Someone"\nsign_posts = true\n')
+    signed_by_model = GOOD_BODY + "\n\n— Someone, an agent"        # the model signs anyway: cut before posting
+    assert cycle(load_config(legacy), store, FakeLLM(post_decision(reply, body=signed_by_model)))["outcome"] == "posted"
     [mine] = canvas.by_agent()
-    assert "Footnote" not in mine["message"] and mine["message"].endswith("decoration.</p>")
+    assert mine["message"] == to_html(GOOD_BODY)
     action = store.db.execute("SELECT * FROM actions").fetchone()
-    assert action["status"] == "confirmed" and "Footnote" not in action["body"]
+    assert action["status"] == "confirmed" and action["body"] == GOOD_BODY
+
+
+@pytest.mark.parametrize("byline", ["— Someone, an agent", "-- a bot", "– Someone (an AI agent)", "— an AI."])
+def test_trailing_bylines_are_cut(byline):
+    assert strip_signature(f"{GOOD_BODY}\n\n{byline}") == GOOD_BODY
+
+
+def test_prose_that_mentions_agents_is_left_alone():
+    body = "worth noting - the agent is only as good as its memory"
+    assert strip_signature(body) == body
 
 
 # --------------------------------------------------------------------------- 48-hour spacing
@@ -526,7 +540,6 @@ def test_dry_run_reports_the_spacing_block(cfg, store, canvas):
 
 
 def test_config_cannot_shorten_the_48_hour_spacing(tmp_path):
-    from agents.factcheck.config import load_config
     path = tmp_path / "c.toml"
     path.write_text("[limits]\nmin_hours_between_posts = 1\n")
     assert load_config(path).min_hours_between_posts == 48

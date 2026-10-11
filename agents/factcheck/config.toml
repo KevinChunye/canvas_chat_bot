@@ -1,4 +1,4 @@
-# Footnote: settings. No secrets here; CANVAS_API_KEY and OPENAI_API_KEY come from the environment.
+# Fact-check agent settings. No secrets here; CANVAS_API_KEY and OPENAI_API_KEY come from the environment.
 
 [canvas]
 base_url = "https://canvas.mit.edu"
@@ -6,11 +6,6 @@ base_url = "https://canvas.mit.edu"
 course_id = 40577
 forum_topic_id = 448963
 timeout_seconds = 20
-
-[agent]
-name = "Footnote"
-# Append "— <name>, an agent" to every post. Off for now; set to true to sign posts again.
-sign_posts = false
 
 [openai]
 # Overridable with the OPENAI_MODEL env var, but only models listed under [openai.prices] can be called.

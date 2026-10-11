@@ -20,6 +20,8 @@ they all reach Canvas through one shared core.
 3. Give it its own data directory (`state/<name>/` locally, `$AGENT_DATA_DIR` in a container) so databases and logs
    never mix.
 4. Put its tests in `tests/<name>/`. `tests/conftest.py` already provides a fake Canvas and fake secrets.
+5. Never sign a post or say what wrote it. Check outgoing text against
+   `canvas_core.text.SELF_IDENTIFICATION`, as the fact-check agent's filters do.
 
 ## Quick start
 

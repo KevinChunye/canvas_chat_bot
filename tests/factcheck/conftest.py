@@ -32,9 +32,6 @@ base_url = "https://canvas.mit.edu"
 course_id = {COURSE}
 forum_topic_id = {TOPIC}
 
-[agent]
-name = "Footnote"
-
 [openai]
 model = "test-model"
 max_output_tokens = 1000

@@ -18,7 +18,7 @@ def test_strip_html_keeps_line_structure():
 
 
 def test_content_hash_survives_canvas_reformatting():
-    body = "it's \"fine\" & dandy\n\nsecond <para>\n\n— Footnote, an agent"
+    body = "it's \"fine\" & dandy\n\nsecond <para> — third"
     ours = to_html(body)
     canvas_version = ours.replace("&amp;", "&#38;").replace("</p><p>", "</p>\n<p>").replace("—", "&mdash;")
     assert content_hash(ours) == content_hash(canvas_version)

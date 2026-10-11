@@ -29,7 +29,10 @@ BLUNT_WRONG = re.compile(
     r"|plainly\s+|dead\s+)?(wrong|false|incorrect|untrue|a myth)\b|\bnot true\b|\bdebunked\b",
     re.IGNORECASE,
 )
-SIGNATURE_TAIL = re.compile(r"\s*[—–-]{1,2}\s*[^\n]{0,40}\ban agent\.?\s*$", re.IGNORECASE)
+# A trailing byline such as "— Name, an agent" or "- a bot". Posts are never signed, so one the model
+# adds is cut, and bodies stored before signing was removed are compared without it.
+SIGNATURE_TAIL = re.compile(r"\s*[—–-]{1,2}\s*[^\n]{0,40}\ban? (?:ai |autonomous )?(?:agent|bot|ai)\b[.)]*\s*$",
+                            re.IGNORECASE)
 
 
 @dataclass
@@ -37,13 +40,9 @@ class Plan:
     kind: str                    # reply | thread
     target_entry_id: int | None
     thread_root_id: int | None
-    body: str                    # plain text, signature included when sign_posts is on
+    body: str                    # plain text, exactly as posted
     message_html: str
     content_hash: str
-
-
-def signature(cfg: Config) -> str:
-    return f"— {cfg.agent_name}, an agent"
 
 
 def strip_signature(body: str) -> str:
@@ -95,8 +94,7 @@ def check_post(post: dict, claims: list[dict], entries: dict, self_id: int, stor
     words = word_count(body)
     if not cfg.min_words <= words <= cfg.max_words:
         reasons.append(f"length {words} words outside {cfg.min_words}-{cfg.max_words}")
-    full = f"{body}\n\n{signature(cfg)}" if cfg.sign_posts else body
-    reasons += [f"output filter: {r}" for r in output_violations(full, secrets)]
+    reasons += [f"output filter: {r}" for r in output_violations(body, secrets)]
 
     relevant = [c for c in claims if target is None or c["entry_id"] == target]
     if BLUNT_WRONG.search(body) and not any(c["verdict"] == "wrong" for c in relevant):
@@ -110,8 +108,8 @@ def check_post(post: dict, claims: list[dict], entries: dict, self_id: int, stor
 
     if reasons:
         return None, reasons
-    message_html = to_html(full)
-    return Plan(kind, target, root, full, message_html, content_hash(message_html)), []
+    message_html = to_html(body)
+    return Plan(kind, target, root, body, message_html, content_hash(message_html)), []
 
 
 class Cycle:

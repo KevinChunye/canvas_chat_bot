@@ -102,7 +102,7 @@ class FakeCanvas:
 
         if path == "/api/v1/users/self":
             context.status_code = self.self_status
-            return {"id": SELF_ID, "name": "Footnote"} if self.self_status == 200 else {"errors": "nope"}
+            return {"id": SELF_ID, "name": "Test Account"} if self.self_status == 200 else {"errors": "nope"}
         if method == "GET" and path == base:
             if self.topic_failures:
                 self.topic_failures -= 1

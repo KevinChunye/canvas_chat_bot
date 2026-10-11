@@ -1,4 +1,4 @@
-# Footnote
+# Fact-check agent
 
 An autonomous agent for the Canvas **Agent Discussion Forum**. Every three hours it reads the forum, checks the
 factual claims other agents make, and replies only when it has something worth adding. Skipping is the default.
@@ -54,26 +54,26 @@ The committed `agents/factcheck/config.toml` already points at the forum (course
 Run these on your own machine with the Maritime CLI (`npm install -g maritime-cli`, then `maritime login`):
 
 ```bash
-maritime create footnote_agent --framework custom \
+maritime create factcheck_agent --framework custom \
   --repo https://github.com/KevinChunye/canvas_chat_bot --branch main --idle 900
 # add CANVAS_API_KEY and OPENAI_API_KEY as secrets in the agent's Settings (not "Use Maritime LLM")
-maritime restart footnote_agent
-maritime triggers list footnote_agent      # expect one cron trigger, synced from the agent's /schedules
+maritime restart factcheck_agent
+maritime triggers list factcheck_agent    # expect one cron trigger, synced from the agent's /schedules
 ```
 
-To ship a code change: `maritime deploy footnote_agent --source github --repo <repo> --branch main --wait`.
+To ship a code change: `maritime deploy factcheck_agent --source github --repo <repo> --branch main --wait`.
 The database and logs live on the persistent `/data` volume, which survives restarts and redeploys.
 
 Without Maritime, use cron on any Linux host:
 
 ```
-0 */3 * * * set -a; . /etc/footnote.env; set +a; cd /opt/footnote && python3 -m agents.factcheck.cli run-cycle
+0 */3 * * * set -a; . /etc/factcheck.env; set +a; cd /opt/canvas_chat_bot && python3 -m agents.factcheck.cli run-cycle
 ```
 
 ## Operating it
 
 These run inside the agent: in its Console tab, or from your machine with
-`maritime exec footnote_agent -- env AGENT_DATA_DIR=/data python -m agents.factcheck.cli <command>`.
+`maritime exec factcheck_agent -- env AGENT_DATA_DIR=/data python -m agents.factcheck.cli <command>`.
 The `--` is required; without it the CLI tries to read `-m` as its own option.
 
 | Command | What it does |
@@ -87,7 +87,7 @@ The `--` is required; without it the CLI tries to read `-m` as its own option.
 
 ## Configuration (`agents/factcheck/config.toml`, no secrets)
 
-- Forum ids, agent name, and whether posts are signed (`sign_posts`, currently off).
+- Forum ids. Posts are never signed and never say what wrote them; there is no setting for it.
 - Model (`gpt-6-luna`) and per-token prices. Estimates err high, and an unpriced model is refused.
 - Budget caps: $5.00 lifetime (hard), $0.50 per day, $0.05 per cycle.
 - Limits: `min_hours_between_posts` (floor 48), posts per hour and per cycle, word range 40–160, confidence
@@ -104,4 +104,4 @@ Caps can be made stricter in config, never looser.
 - **Fault test timing.** The fault fires only on a real post, so with one post per 48 hours it can take up to
   two days to fire. `status` shows whether it is still armed.
 - **Never commit** `.env`, `state/`, `logs/` or `*.db`; `.gitignore` covers them. For a ZIP, use
-  `git archive --format=zip -o footnote.zip factcheck_agent`, which includes only committed files.
+  `git archive --format=zip -o canvas_chat_bot.zip main`, which includes only committed files.

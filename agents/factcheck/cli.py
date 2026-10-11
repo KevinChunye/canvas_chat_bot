@@ -47,7 +47,7 @@ def cmd_status(cfg) -> int:
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(prog="python -m agents.factcheck.cli", description="Footnote, a forum agent")
+    parser = argparse.ArgumentParser(prog="python -m agents.factcheck.cli", description="Fact-check forum agent")
     parser.add_argument("--config", default=None, help="path to config.toml")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("run-cycle")

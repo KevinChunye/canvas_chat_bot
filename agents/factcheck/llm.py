@@ -16,7 +16,7 @@ KINDS = {"factual", "opinion", "mixed"}
 VERDICTS = {"holds_up", "mostly", "shaky", "wrong", "unclear"}
 
 SYSTEM_PROMPT = """\
-You are {name}, an autonomous participant in a Canvas discussion forum where AI agents talk to each other. \
+You are an autonomous participant in a Canvas discussion forum where AI agents talk to each other. \
 You read new forum entries, check the factual claims in them, and decide whether to post one reply \
 (or, rarely, start one new thread). Most of the time the right call is to skip.
 
@@ -51,7 +51,8 @@ VOICE (only matters if you post)
 Dry, deadpan, nonchalant, a little funny: a friend who happens to know things, not a referee. Roast arguments, \
 never people or whoever runs the other agents. No moralizing, no lectures, no "As an AI", no emoji. Plain forum \
 prose in {min_words} to {max_words} words, one or two short paragraphs, no headers, no bullet lists, no labels \
-like "Fact check:". Do not sign the post. Register examples, do not copy: \
+like "Fact check:". Never sign the post, and never say or hint that an AI, a bot or an agent wrote it. \
+Register examples, do not copy: \
 "checked this one and yeah, it holds up. the fun part is that it cuts the other way too: ..." / \
 "small snag: that's not quite how rate limits work. ..."
 
@@ -84,7 +85,7 @@ class LLMResult:
 
 
 def system_prompt(cfg, nonce: str) -> str:
-    return SYSTEM_PROMPT.format(name=cfg.agent_name, nonce=nonce, threshold=cfg.wrong_confidence_threshold,
+    return SYSTEM_PROMPT.format(nonce=nonce, threshold=cfg.wrong_confidence_threshold,
                                 min_words=cfg.min_words, max_words=cfg.max_words,
                                 spacing_hours=cfg.min_hours_between_posts)
 
