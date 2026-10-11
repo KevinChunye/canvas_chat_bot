@@ -27,6 +27,7 @@ def evidence(cfg: Config, store: Store) -> dict:
         h["checks"] = dict(json.loads(h["checks"])) if h["checks"] else {}
         h["capabilities"] = json.loads(h["capabilities"])
         h["request_entry_id"] = (posts.get(f"hire:{h['token']}") or {}).get("canvas_entry_id")
+        h["verdict_entry_id"] = (posts.get(f"verdict:{h['token']}") or {}).get("canvas_entry_id")
         hires.append(h)
     discoveries = [dict(d, candidates=json.loads(d["candidates"])) for d in store.discoveries()]
     events = [dict(e) for e in db.execute("SELECT * FROM events ORDER BY id")]
@@ -118,13 +119,15 @@ def build_report(cfg: Config, store: Store) -> str:
         chosen = link(cfg, d["chosen_entry_id"]) if d["chosen_entry_id"] else "none suitable"
         out.append(f"| {d['at']} | {d['game_id']} | {d['offers_seen']} | {chosen} | {cands or '-'} |")
     out += ["", "## Audit requests, replies and checks", "",
-            "| game | provider offer | request | reply | deadline | PROOF | COMMIT | ROWS | MISMATCHES | status |",
-            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
+            "| game | provider offer | request | reply | deadline | PROOF | COMMIT | ROWS | MISMATCHES | status "
+            "| checks posted | tip |",
+            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
     for h in ev["hires"]:
         req = link(cfg, h["request_entry_id"]) if h["request_entry_id"] else "-"
         rep = link(cfg, h["reply_entry_id"]) if h["reply_entry_id"] else "-"
+        verdict = link(cfg, h["verdict_entry_id"]) if h["verdict_entry_id"] else "-"
         out.append(f"| {h['game_id']} | {link(cfg, h['provider_entry_id'])} | {req} | {rep} | {h['deadline']} | "
-                   + " | ".join(_check_cells(h)) + f" | {h['status']} |")
+                   + " | ".join(_check_cells(h)) + f" | {h['status']} | {verdict} | {h['tip'] or '-'} |")
     out += ["", "## Posts", ""]
     for key, p in ev["posts"].items():
         where = link(cfg, p["canvas_entry_id"]) if p["canvas_entry_id"] else "-"
@@ -211,16 +214,18 @@ def build_writeup(cfg: Config, store: Store, path, sandbox: bool = False) -> int
         f"<b>Discovery.</b> Every top-level offer except ours is scored on the capabilities the audit needs: hashing "
         f"(3), computation (2) and verification (1), counting only sentences that offer something (not \"I will "
         f"not run code\" or \"I check this forum hourly\"). Offers under {cfg.hire_min_score} are unsuitable, and so "
-        f"is a provider with two failed audits and none accepted. The rest rank by "
+        f"is a provider that declined or failed two audits, unless it has one accepted. The rest rank by "
         f"score, then track record (accepted minus failed audits), then age. No provider is hard-coded, and every "
         f"scan is stored with each candidate's score ({len(scans)} scans so far).",
         f"<b>Delegation.</b> The request is a reply to the chosen offer and carries everything needed: inputs "
         f"(commitment, reveal, every shot), the expected result (five fixed lines), the checks that will be applied, "
         f"and a deadline ({cfg.hire_deadline_hours:g} hours). The request, the answers the house computed and the "
-        f"deadline are stored before posting. Later runs read the provider's thread and check the first reply that "
-        f"names the request. A rejected or expired request moves to the next suitable provider (at most "
-        f"{cfg.hire_max_providers} per game). Nothing is re-requested while a request is open, and no provider is "
-        f"asked twice about the same game.",
+        f"deadline are stored before posting. Later runs read the provider's thread with no manual relay and check "
+        f"the first reply with answer lines posted before the deadline; a note without answers is not checked, and "
+        f"a reply that declines closes the request. The outcome of every check is posted back in the provider's "
+        f"thread. A rejected, declined or expired request moves to the next suitable provider (at most "
+        f"{cfg.hire_max_providers} per game). Nothing is re-requested while a request is open, no provider is "
+        f"asked twice about the same game, and one that declined is not asked again.",
     ])
     if request:
         lines = request.splitlines()
@@ -228,7 +233,7 @@ def build_writeup(cfg: Config, store: Store, path, sandbox: bool = False) -> int
             story.append(p("No request has been sent yet, so this is the request the agent would send for the first "
                            "revealed game (the offer id is a placeholder):", small))
         story.append(Preformatted("\n".join(line if len(line) < 118 else line[:115] + "..." for line in
-                                            lines[:2] + lines[4:6] + ["..."] + lines[10:16] + lines[-2:]), mono))
+                                            lines[:2] + lines[4:6] + ["..."] + lines[10:16] + lines[-3:]), mono))
 
     story += [p("3. Results and checks", h2),
               p(f"So far: {ev['games']} games ({ev['finished']} finished), {len(ev['turns_confirmed'])} verified TURN "
@@ -240,12 +245,23 @@ def build_writeup(cfg: Config, store: Store, path, sandbox: bool = False) -> int
                 "result disagrees with the layout. The house computes all four from the revealed layout with code that "
                 "is independent of the game engine, and accepts a reply only if all four match.")]
     if hires:
-        rows = [["Game", "Provider", "Request", "Reply", "PROOF", "COMMIT", "ROWS", "MISMATCH", "Outcome"]]
+        rows = [["Game", "Provider", "Request", "Reply", "PROOF", "COMMIT", "ROWS", "MISMATCH", "Outcome",
+                 "Verdict"]]
         for h in hires[:9]:
+            outcome = h["status"] + (f", tip {h['tip']}" if h["tip"] else "")
             rows.append([str(h["game_id"]), p(a(h["provider_entry_id"]), small), p(a(h["request_entry_id"]), small),
-                         p(a(h["reply_entry_id"]), small), *_check_cells(h), h["status"]])
-        story.append(table(rows, [0.45 * inch, 0.8 * inch, 0.8 * inch, 0.8 * inch, 0.55 * inch, 0.6 * inch,
-                                  0.5 * inch, 0.7 * inch, 0.7 * inch]))
+                         p(a(h["reply_entry_id"]), small), *_check_cells(h), p(outcome, small),
+                         p(a(h["verdict_entry_id"]), small)])
+        story.append(table(rows, [0.4 * inch, 0.75 * inch, 0.75 * inch, 0.75 * inch, 0.5 * inch, 0.55 * inch,
+                                  0.45 * inch, 0.65 * inch, 0.75 * inch, 0.75 * inch]))
+        choices = []
+        for h in hires[:4]:
+            scan = next((d for d in scans if d["game_id"] == h["game_id"]
+                         and d["chosen_entry_id"] == h["provider_entry_id"]), None)
+            choices.append(f"game {h['game_id']}: offer {a(h['provider_entry_id'])}, score {h['score']} "
+                           f"({', '.join(h['capabilities']) or 'none'}), the best suitable offer"
+                           + (f" of {scan['offers_seen']} read" if scan else ""))
+        story.append(p("<b>Why these providers.</b> " + "; ".join(choices) + ".", small))
     else:
         story.append(p("<b>No suitable provider has answered yet.</b> Every scan is listed below. What remains "
                        "unfinished: receiving and checking a peer's audit. The request format, the stored "
@@ -253,7 +269,8 @@ def build_writeup(cfg: Config, store: Store, path, sandbox: bool = False) -> int
     if ev["audit_post"]:
         story.append(p(f"<b>Use.</b> Accepted audits appear as an AUDITS line in TURN posts, first in "
                        f"{a(ev['audit_post']['canvas_entry_id'], 'turn ' + str(ev['audit_post']['turn']))}, and on "
-                       f"the spectator page."))
+                       f"the spectator page. Each accepted provider is thanked in its thread with a tip of virtual "
+                       f"coins (3, or 4 when the audit came back within half the deadline), recorded once."))
     if scans:
         story.append(p(f"<b>Discovery scans.</b> {len(scans)} automatic scans from {scans[0]['at'][:16].replace('T', ' ')} "
                        f"to {scans[-1]['at'][:16].replace('T', ' ')} UTC, reading {_span(scans)} offers each; "
@@ -307,14 +324,15 @@ def build_writeup(cfg: Config, store: Store, path, sandbox: bool = False) -> int
     if ev["final_post"] and ev["final_post"]["canvas_entry_id"]:
         links.append(f"Final reveal: {a(ev['final_post']['canvas_entry_id'])}")
     for h in hires[:6]:
-        links.append(f"Game {h['game_id']} audit: request {a(h['request_entry_id'])}, reply {a(h['reply_entry_id'])}, "
-                     f"{h['status']}")
+        links.append(f"Game {h['game_id']} audit: request {a(h['request_entry_id'])}, reply {a(h['reply_entry_id'])}"
+                     + (f", checks posted {a(h['verdict_entry_id'])}" if h["verdict_entry_id"] else "")
+                     + f", {h['status']}" + (f", tip {h['tip']} coins" if h["tip"] else ""))
     story += bullets(links)
     excerpt = log_excerpt(ev["events"])
     if excerpt:
         story += [p("Log excerpt from the agent's events table (UTC): discovery scans, audit decisions, post "
                     "verification and safety stops, none of which is visible in the forum.", small),
-                  Preformatted("\n".join(excerpt), mono)]
+                  Preformatted("\n".join(line[:118] for line in excerpt), mono)]
 
     pages = []
     doc = SimpleDocTemplate(str(path), pagesize=letter, leftMargin=0.7 * inch, rightMargin=0.7 * inch,

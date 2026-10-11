@@ -8,7 +8,9 @@ import pytest
 from agents.ghost_fleet import engine, hire
 from agents.ghost_fleet.config import load_config
 from agents.ghost_fleet.runner import TurnRun, rebuild, write_block
+from agents.ghost_fleet.store import Store
 from canvas_core.text import strip_html
+from canvas_core.times import parse_time
 from tests.conftest import SELF_ID
 from tests.ghost_fleet.conftest import fire, turn
 
@@ -117,6 +119,15 @@ def test_a_correct_reply_is_accepted_and_printed_in_the_next_turn_post(cfg, stor
     state = json.loads(cfg.state_json_path.read_text())
     assert state["audits"][0]["status"] == "accepted"
 
+    # the outcome of every check is posted in the provider's thread, after the TURN post, with the tip
+    _, verdict = house_posts_under(canvas, ledger)
+    text = strip_html(verdict["message"])
+    assert text.startswith(f"CHECKED {h['token']}: ACCEPTED")
+    assert "PROOF pass · COMMIT MATCHES pass · ROWS pass · MISMATCHES pass" in text
+    assert f"TIP: 4 virtual coins for request {h['token']}" in text and h["tip"] == 4    # back within half the deadline
+    assert verdict["id"] > store.turn_row(result["turn"])["canvas_entry_id"]
+    assert store.post(f"verdict:{h['token']}")["status"] == "confirmed"
+
 
 def test_a_wrong_reply_is_rejected_and_the_next_provider_is_asked(cfg, store, canvas, offer, clock):
     ledger = offer_post(canvas, LEDGER, LEDGER_OFFER)
@@ -132,6 +143,101 @@ def test_a_wrong_reply_is_rejected_and_the_next_provider_is_asked(cfg, store, ca
     assert dict(json.loads(first["checks"])) == {"proof": False, "commit": True, "rows": True, "mismatches": True}
     assert second["provider_entry_id"] == checksum and len(house_posts_under(canvas, checksum)) == 1
     assert all("IGNORE" not in e["message"] for e in canvas.entries.values() if e["user_id"] == SELF_ID)
+    _, verdict = house_posts_under(canvas, ledger)
+    text = strip_html(verdict["message"])
+    assert text.startswith(f"CHECKED {first['token']}: REJECTED") and "PROOF fail · COMMIT MATCHES pass" in text
+    assert f'PROOF must be the SHA-256 hex digest of "{first["token"]}|"' in text and "TIP" not in text
+    assert json.loads(first["expected"])["proof"] not in text           # the answer is never given away
+
+
+def test_a_decline_closes_the_request_and_that_provider_is_not_asked_again(cfg, store, canvas, offer, clock):
+    ledger = offer_post(canvas, LEDGER, LEDGER_OFFER)
+    checksum = offer_post(canvas, CHECKSUM, CHECKSUM_OFFER)
+    finish_game_one(cfg, store, canvas, offer, clock)
+    [request] = house_posts_under(canvas, ledger)
+    canvas.add(LEDGER, "Sorry, this is outside my scope, so I cannot take it.", parent_id=request["id"], minutes_ago=0)
+    clock.advance()
+    turn(cfg, store)
+    first, second = store.hires()
+    assert first["status"] == "declined" and first["checks"] is None
+    assert len(house_posts_under(canvas, ledger)) == 1                  # nothing to check, so nothing posted back
+    assert second["provider_entry_id"] == checksum
+    record, barred = TurnRun(cfg, store, None, None, "r", False, None).track_record()
+    assert barred == {LEDGER}
+
+
+def test_a_note_before_the_answer_is_not_taken_for_the_answer(cfg, store, canvas, offer, clock):
+    ledger = offer_post(canvas, LEDGER, LEDGER_OFFER)
+    finish_game_one(cfg, store, canvas, offer, clock)
+    [request] = house_posts_under(canvas, ledger)
+    canvas.add(LEDGER, "Got it, working on this now.", parent_id=request["id"], minutes_ago=1)
+    clock.advance()
+    turn(cfg, store)
+    assert store.hires()[0]["status"] == "requested"
+    provider_reply(canvas, request["id"], LEDGER)
+    clock.advance()
+    turn(cfg, store)
+    assert store.hires()[0]["status"] == "accepted"
+
+
+def test_a_reply_after_the_deadline_is_not_checked(cfg, store, canvas, offer, clock):
+    ledger = offer_post(canvas, LEDGER, LEDGER_OFFER)
+    finish_game_one(cfg, store, canvas, offer, clock)
+    [request] = house_posts_under(canvas, ledger)
+    late = provider_reply(canvas, request["id"], LEDGER)
+    deadline = parse_time(store.hires()[0]["deadline"])
+    canvas.entries[late]["created_at"] = (deadline + timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    clock.at = deadline + timedelta(minutes=10)
+    turn(cfg, store)
+    [h] = store.hires()
+    assert h["status"] == "expired" and h["reply_entry_id"] is None
+    assert len(house_posts_under(canvas, ledger)) == 1
+
+
+def test_a_held_back_verdict_is_posted_once_by_the_next_run(tmp_path, cfg, store, canvas, offer, clock):
+    cfg = limited(tmp_path, cfg, "max_writes_per_hour = 1")
+    ledger = offer_post(canvas, LEDGER, LEDGER_OFFER)
+    finish_game_one(cfg, store, canvas, offer, clock)
+    clock.advance()
+    turn(cfg, store)                                                    # the request goes out this hour
+    [request] = house_posts_under(canvas, ledger)
+    provider_reply(canvas, request["id"], LEDGER)
+    clock.advance()
+    fire(canvas, offer, 201, "FIRE A1 A2")
+    turn(cfg, store)                                                    # the TURN post uses the hour's one write
+    [h] = store.hires()
+    assert h["status"] == "accepted" and store.post(f"verdict:{h['token']}")["status"] == "pending"
+    clock.advance()
+    turn(cfg, store)
+    clock.advance()
+    turn(cfg, store)
+    assert store.post(f"verdict:{h['token']}")["status"] == "confirmed"
+    assert [strip_html(e["message"]).split(":")[0] for e in house_posts_under(canvas, ledger)] == \
+        ["REQUEST GF-AUDIT-G1-" + str(ledger), f"CHECKED {h['token']}"]
+
+
+def test_answer_lines_are_read_leniently_but_must_be_right():
+    expected = {"proof": "a" * 64, "commit_matches": True, "rows": [5, 0, 4, 0, 3, 0, 3, 0, 2, 0], "mismatches": []}
+    styled = ("REQUEST T\n**PROOF:** " + "A" * 64 + "\n- COMMIT MATCHES: Yes.\n* ROWS: 5, 0, 4, 0, 3, 0, 3, 0, 2, 0\n"
+              "MISMATCHES: none")
+    assert hire.check_reply(styled, expected)[0] and hire.classify_reply(styled) == "answer"
+    assert not hire.check_reply(styled.replace("Yes.", "No."), expected)[0]
+    assert hire.classify_reply("Sorry, I can't do SHA-256 work.") == "decline"
+    assert hire.classify_reply("Got it, working on it!") is None
+
+
+def test_older_databases_gain_the_tip_column(tmp_path):
+    import sqlite3
+    path = tmp_path / "old.db"
+    db = sqlite3.connect(path)
+    db.execute("CREATE TABLE hires (token TEXT PRIMARY KEY, game_id INTEGER, provider_entry_id INTEGER, "
+               "provider_user_id INTEGER, score INTEGER, capabilities TEXT, expected TEXT, status TEXT, deadline TEXT, "
+               "reply_entry_id INTEGER, checks TEXT, created_at TEXT, settled_at TEXT)")
+    db.commit()
+    db.close()
+    s = Store(path)
+    assert "tip" in {r["name"] for r in s.db.execute("PRAGMA table_info(hires)")}
+    s.close()
 
 
 def test_expired_requests_move_on_and_stop_at_the_provider_limit(cfg, store, canvas, offer, clock):

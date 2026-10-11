@@ -7,8 +7,8 @@ with room under the write limit posts its turn, and later runs in that slot only
 is always posted before any volley resolves against it, and the first run after season_end reveals the unfinished
 game.
 
-The hire: settle open audit requests (check the provider's reply, or expire it), then ask at most one new provider
-to audit a finished game (see hire.py).
+The hire: settle open audit requests (check the provider's reply and post the outcome in its thread, note a
+decline, or expire it), then ask at most one new provider to audit a finished game (see hire.py).
 
 Every post goes through the outbox: committed first, POSTed under the forum's write limit and the control line,
 verified by re-fetching, and found again by its header after a lost acknowledgement instead of being re-posted.
@@ -40,7 +40,7 @@ from .store import Store
 
 HALT_AFTER_FAILURES = 3
 CLOCK_SKEW = timedelta(minutes=10)
-STRIKES = 2                          # failed audits, none accepted: that provider is not asked again
+STRIKES = 2                          # failed audits and none accepted: that provider is not asked again
 RESCAN_AFTER = timedelta(hours=1)    # after a scan finds no suitable provider
 
 
@@ -232,9 +232,10 @@ class TurnRun:
                 summary += "; " + self.discovery_preview(self_id)
             return self.finish(outcome, summary)
         if cfg.hire_enabled:
+            verdicts = self.post_verdicts()
             note, hire_failed = self.hire_step(self_id)
-            summary = "; ".join([summary] + settled + ([note] if note else []))
-            failed = failed or hire_failed
+            summary = "; ".join([summary] + settled + verdicts + ([note] if note else []))
+            failed = failed or hire_failed or any(v.endswith(("unverified", "failed")) for v in verdicts)
         write_spectator_state(cfg, store)
         return self.finish("error" if failed else outcome, summary, failed=failed)
 
@@ -410,6 +411,8 @@ class TurnRun:
         return self.request_audit(game_id, self_id)
 
     def settle_hire(self, h) -> str | None:
+        """Check the provider's answer to an open request, if one came before the deadline. Its outcome, check by
+        check, is queued as a reply in the provider's thread in the same transaction as the decision."""
         store, token = self.store, h["token"]
         post = store.post(f"hire:{token}")
         if post["status"] == "abandoned":
@@ -418,24 +421,60 @@ class TurnRun:
             return f"audit request {token} could not be posted"
         if post["status"] != "confirmed":
             return None
-        request_id = post["canvas_entry_id"]
+        request_id, deadline = post["canvas_entry_id"], parse_time(h["deadline"])
         replies = sorted((e for e in self.entries.values()
                           if e["user_id"] == h["provider_user_id"] and e["root_id"] == h["provider_entry_id"]
                           and e["id"] > request_id and not e["deleted"]
+                          and e["created_at"] and parse_time(e["created_at"]) <= deadline
                           and (e["parent_id"] == request_id or token in (e["text"] or ""))),
                          key=lambda e: (e["created_at"] or "", e["id"]))
-        if replies:
-            accepted, checks = hire.check_reply(replies[0]["text"], json.loads(h["expected"]))
+        kinds = [(e, hire.classify_reply(e["text"])) for e in replies]
+        answer = next((e for e, kind in kinds if kind == "answer"), None)
+        if answer is not None:
+            expected = json.loads(h["expected"])
+            accepted, checks = hire.check_reply(answer["text"], expected)
             status = "accepted" if accepted else "rejected"
-            store.settle_hire(token, status, replies[0]["id"], checks)
-            store.add_event(token, self.run_id, f"hire_{status}", {"reply": replies[0]["id"], "checks": checks})
-            self.log(f"hire_{status}", token=token, reply=replies[0]["id"], checks=checks)
+            tip = hire.tip_for(parse_time(h["created_at"]), deadline, parse_time(answer["created_at"])) \
+                if accepted else None
+            body = hire.verdict_body(token, h["game_id"], accepted, checks, expected, tip,
+                                     season_closed=bool(store.get_state("season_closed")))
+            violations = post_violations(body, secret_values())
+            try:
+                store.settle_hire(token, status, answer["id"], checks, tip, commit=False)
+                if not violations:
+                    store.add_post(f"verdict:{token}", "verdict", h["provider_entry_id"], body.splitlines()[0], body,
+                                   to_html(body))
+                store.db.commit()
+            except BaseException:
+                store.db.rollback()
+                raise
+            store.add_event(token, self.run_id, f"hire_{status}", {"reply": answer["id"], "checks": checks, "tip": tip})
+            if violations:
+                store.add_event(f"verdict:{token}", self.run_id, "post_rejected", {"reasons": violations})
+            self.log(f"hire_{status}", token=token, reply=answer["id"], checks=checks, tip=tip)
             return f"audit of game {h['game_id']} by offer {h['provider_entry_id']}: {status}"
-        if store.clock() > parse_time(h["deadline"]):
+        declined = next((e for e, kind in kinds if kind == "decline"), None)
+        if declined is not None:
+            store.settle_hire(token, "declined", declined["id"])
+            store.add_event(token, self.run_id, "hire_declined", {"reply": declined["id"]})
+            return f"audit request {token} declined"
+        if store.clock() > deadline:
             store.settle_hire(token, "expired")
             store.add_event(token, self.run_id, "hire_expired")
             return f"audit request {token} expired"
         return None
+
+    def post_verdicts(self) -> list[str]:
+        """Post the check outcomes decided this run, after the TURN post. One that meets the write limit stays
+        pending, and the next run posts it before anything else."""
+        notes = []
+        for post in self.store.pending_posts():
+            if post["kind"] == "verdict" and post["attempts"] == 0:
+                outcome = self.poster.execute(post["key"])
+                notes.append(f"{post['header']} posted: {outcome}")
+                if outcome != "confirmed":
+                    break
+        return notes
 
     def game_needing_audit(self) -> int | None:
         """The first finished game with no open or accepted audit, whose reveal is already on the forum."""
@@ -451,17 +490,22 @@ class TurnRun:
         return None
 
     def track_record(self) -> tuple[dict[int, int], set[int]]:
-        """Accepted minus failed audits per provider, and the providers not to ask again: STRIKES failed audits
-        (rejected or expired) and none accepted."""
+        """Accepted minus failed audits per provider, and the providers not to ask again, unless they have an
+        accepted audit: one that declined (the task is the same for every game), or STRIKES failed audits
+        (rejected, declined or expired)."""
         accepted: dict[int, int] = {}
         failed: dict[int, int] = {}
+        declined: set[int] = set()
         for h in self.store.hires():
+            user = h["provider_user_id"]
             if h["status"] == "accepted":
-                accepted[h["provider_user_id"]] = accepted.get(h["provider_user_id"], 0) + 1
-            elif h["status"] in ("rejected", "expired"):
-                failed[h["provider_user_id"]] = failed.get(h["provider_user_id"], 0) + 1
+                accepted[user] = accepted.get(user, 0) + 1
+            elif h["status"] in ("rejected", "declined", "expired"):
+                failed[user] = failed.get(user, 0) + 1
+                if h["status"] == "declined":
+                    declined.add(user)
         record = {u: accepted.get(u, 0) - failed.get(u, 0) for u in accepted.keys() | failed.keys()}
-        barred = {u for u, n in failed.items() if n >= STRIKES and not accepted.get(u)}
+        barred = {u for u, n in failed.items() if (n >= STRIKES or u in declined) and not accepted.get(u)}
         return record, barred
 
     def request_audit(self, game_id: int, self_id: int) -> tuple[str | None, bool]:

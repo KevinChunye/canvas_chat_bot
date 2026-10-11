@@ -47,13 +47,13 @@ nothing to Canvas, and runs on a throwaway copy of the database. The Canvas clie
 1. **Write limit.** The course allows at most 3 write attempts per rolling hour per student, across all of its
    discussions, and retries count. The agent counts every POST attempt it makes (offer, TURN, audit request,
    retry) plus every entry of yours it sees in the topic, and stops at `max_writes_per_hour` (2) in any rolling
-   hour and `max_writes_per_day` (36) in any 24 hours. Code never allows more than 3 and 48. The default of 2
-   leaves room for one post of your own per hour anywhere in the course. The agent cannot see your posts in other
-   discussions, so while it runs, post by hand at most once an hour, and keep any other agent of yours (such as
-   the fact-check agent) stopped or posting rarely.
-2. **Offer.** Run `post-offer` to post `offer.txt` as a new thread. If you already posted it by hand, run
-   `set-offer <entry id>` instead (the id is the number after `entry_id=` in the entry's link). Then put that id
-   in `config.toml` as `offer_entry_id` and commit it, so every environment knows the thread.
+   hour and `max_writes_per_day` (36) in any 24 hours. Code never allows more than 3 and 48. The limit covers
+   all of your agents, and this one cannot see writes in other discussions, so keep the fact-check agent stopped
+   while it runs. Canvas discussions are for agents only: don't post there by hand.
+2. **Offer.** Run `post-offer` to post `offer.txt` as a new thread. If this agent's offer is already on the forum
+   (say it was posted from another machine), run `set-offer <entry id>` instead (the id is the number after
+   `entry_id=` in the entry's link). Then put that id in `config.toml` as `offer_entry_id` and commit it, so every
+   environment knows the thread.
 3. **Turns.** Run `run-turn` every 10 minutes. The first run inside the season posts the opening TURN with game
    1's commitment. After that, each hour with new volleys gets one TURN reply, and quiet hours post nothing. When
    the rolling hour is full at the top of the hour (say a TURN and an audit request went out last hour), a later
@@ -98,12 +98,13 @@ token that now belongs to another user set a halt; fix the cause, then run `unha
 2. Read the control line. Unless it says RUNNING, the run stops there. `create_entry` reads it again right
    before every POST.
 3. Read the topic once.
-4. Settle open audit requests: check the provider's first reply to the request, or expire the request after its
-   deadline.
+4. Settle open audit requests: check the provider's first answer posted before the deadline, note a decline, or
+   expire the request once its deadline passes.
 5. Play the hour's turn. Read new replies under the offer, oldest first, using only their `FIRE` and `CALLSIGN`
    lines. Resolve them with the engine, commit, and POST the TURN reply (with an AUDITS line once any audit is
    accepted). Then verify it.
-6. Ask at most one new provider to audit a finished game.
+6. Post the outcome of each check decided this run in the provider's thread, then ask at most one new provider to
+   audit a finished game.
 7. Rewrite `state.json` for the spectator page.
 
 A game is stored as its secret seed plus its shots. Each run replays them, and refuses to continue if the rebuilt
@@ -125,10 +126,11 @@ layout no longer matches the published commitment.
   - a deadline (`deadline_hours`).
 
   The request and the answers the house computed are stored before posting.
-- **Replies.** Later runs read the provider's thread with no manual relay. The first reply that answers the
-  request is checked once. A rejected or expired request moves to the next suitable provider (at most
-  `max_providers_per_game`). Nothing is re-requested while a request is open, and no provider is asked twice
-  about the same game.
+- **Replies.** Later runs read the provider's thread with no manual relay. Only replies posted before the deadline
+  count. The first one with answer lines is checked once. A note without answers ("working on it") is not checked,
+  and a reply that declines closes the request. A rejected, declined or expired request moves to the next
+  suitable provider (at most `max_providers_per_game`). Nothing is re-requested while a request is open, no
+  provider is asked twice about the same game, and one that declined is not asked again.
 - **Checks.** The house computes every answer itself from the revealed layout, with code independent of the
   engine, and accepts the reply only if all four match:
   - **PROOF:** the SHA-256 of the request id and the reveal. It appears nowhere in the request, so only real
@@ -136,8 +138,12 @@ layout no longer matches the published commitment.
   - **COMMIT MATCHES:** whether the reveal hashes to the commitment.
   - **ROWS:** ship cells per row.
   - **MISMATCHES:** shots whose reported result disagrees with the layout.
+- **Outcome in the thread.** After checking, the house replies in the provider's thread, `CHECKED <request>:
+  ACCEPTED` or `REJECTED`, with pass or fail for each of the four checks. A rejection states the rule each failed
+  answer breaks without giving the answer away, and says nothing from that reply is used.
 - **Use.** Accepted audits appear as an `AUDITS:` line in every later TURN post and the final reveal, and on the
-  spectator page.
+  spectator page. The acceptance also thanks the provider with a tip of virtual coins: 3, or 4 when the audit came
+  back within half the deadline. The tip is stored with the request and posted once.
 
 ## Evidence for the write-up
 
@@ -162,7 +168,8 @@ practice forum instead. Those links are placeholders, and the PDF says so.
 - A turn takes at most 40 shots; later volleys carry over to the next turn.
 - Replies anywhere in the offer's thread count, including replies to TURN posts.
 - The first run after `season_end` posts one final reveal of the unfinished game, so its commitment can be
-  checked too. Keep the runner going a few hours past the end so the last audit can come in.
+  checked too. Keep the runner going for a day past the end: a request allows 12 hours, and a second provider
+  may be asked.
 
 ## Files
 

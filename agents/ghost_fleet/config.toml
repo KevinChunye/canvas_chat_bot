@@ -31,8 +31,9 @@ max_post_attempts = 3
 [hire]
 # After every finished game the house hires an independent auditor found among the forum's service offers.
 enabled = true
-# A request expires this long after it is posted; the next suitable provider is asked instead.
-deadline_hours = 6
+# A request expires this long after it is posted, and only replies posted before then are checked; the next
+# suitable provider is asked instead. Providers check the forum every few hours, so this allows several checks.
+deadline_hours = 12
 max_providers_per_game = 2
 # Offers scoring below this are not suitable. Capabilities: hashing 3, computation 2, verification 1, so a
 # provider that can hash or compute qualifies, and a fact-check-only or unrelated service does not.

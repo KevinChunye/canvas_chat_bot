@@ -53,8 +53,8 @@ CREATE TABLE IF NOT EXISTS turns (
     record TEXT                -- JSON, players by id; the post itself is outbox row 'turn:<turn>'
 );
 CREATE TABLE IF NOT EXISTS outbox (
-    key TEXT PRIMARY KEY,      -- offer | turn:<n> | hire:<token>
-    kind TEXT,                 -- offer | turn | hire
+    key TEXT PRIMARY KEY,      -- offer | turn:<n> | hire:<token> | verdict:<token>
+    kind TEXT,                 -- offer | turn | hire | verdict
     parent_entry_id INTEGER,   -- the entry it replies to; NULL for a new thread
     header TEXT,               -- first line; finds the post again after a lost acknowledgement
     body TEXT,
@@ -74,12 +74,13 @@ CREATE TABLE IF NOT EXISTS hires (
     score INTEGER,
     capabilities TEXT,         -- JSON: our capability labels the offer matched
     expected TEXT,             -- JSON: the answers the house computed itself
-    status TEXT,               -- requested | accepted | rejected | expired | unsent
+    status TEXT,               -- requested | accepted | rejected | declined | expired | unsent
     deadline TEXT,
     reply_entry_id INTEGER,
     checks TEXT,               -- JSON: [[check, passed], ...] for the reply that settled it
     created_at TEXT,
-    settled_at TEXT
+    settled_at TEXT,
+    tip INTEGER                -- virtual coins given for an accepted audit, recorded once
 );
 CREATE TABLE IF NOT EXISTS discoveries (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -125,6 +126,8 @@ class Store:
         if self.path != ":memory:":
             self.db.execute("PRAGMA journal_mode=WAL")
         self.db.executescript(SCHEMA)
+        if "tip" not in {r["name"] for r in self.db.execute("PRAGMA table_info(hires)")}:
+            self.db.execute("ALTER TABLE hires ADD COLUMN tip INTEGER")     # databases from before tips
         self.db.commit()
         self.clock = clock
 
@@ -320,12 +323,14 @@ class Store:
             (token, game_id, provider_entry_id, provider_user_id, score, json.dumps(capabilities),
              json.dumps(expected), iso(deadline), self.now_iso()))
 
-    def settle_hire(self, token: str, status: str, reply_entry_id: int | None = None,
-                    checks: list | None = None) -> None:
-        self.db.execute("UPDATE hires SET status = ?, reply_entry_id = ?, checks = ?, settled_at = ? WHERE token = ?",
-                        (status, reply_entry_id, json.dumps(checks) if checks is not None else None, self.now_iso(),
-                         token))
-        self.db.commit()
+    def settle_hire(self, token: str, status: str, reply_entry_id: int | None = None, checks: list | None = None,
+                    tip: int | None = None, commit: bool = True) -> None:
+        self.db.execute("UPDATE hires SET status = ?, reply_entry_id = ?, checks = ?, tip = ?, settled_at = ? "
+                        "WHERE token = ?",
+                        (status, reply_entry_id, json.dumps(checks) if checks is not None else None, tip,
+                         self.now_iso(), token))
+        if commit:
+            self.db.commit()
 
     def add_discovery(self, run_id: str, game_id: int | None, offers_seen: int, candidates: list[dict],
                       chosen_entry_id: int | None) -> None:
