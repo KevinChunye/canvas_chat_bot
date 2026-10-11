@@ -189,6 +189,53 @@ def choose_cells(game, skill, rng):
     return pd.Series(scores).nlargest(MAX_CELLS_LISTED).index.tolist()
 
 
+def resolve_turn(game, queue, turn, last_counted):
+    """Resolve one turn's volleys in posting order.
+
+    queue: volley dicts {"by", "cells", "carried"}; "by" is also the cooldown key.
+    last_counted: by -> last turn a volley of theirs fired; updated in place.
+    Returns (record, carry). Each volley gets an "outcome": fired | skipped | refunded | carried.
+    """
+    record = {"volleys": [], "skipped": [], "refunded": [], "carried": []}
+    carry = []
+    shots_this_turn = 0
+    for volley in queue:
+        name = volley["by"]
+        if game.over:
+            record["refunded"].append(name)
+            volley["outcome"] = "refunded"
+            continue
+        if not volley["carried"] and name in last_counted and turn - last_counted[name] < COOLDOWN_TURNS:
+            record["skipped"].append(name)
+            volley["outcome"] = "skipped"
+            continue
+        open_cells = [parse_cell(x) for x in volley["cells"] if parse_cell(x) not in game.fired]
+        open_cells = open_cells[:SHOTS_PER_VOLLEY]
+        if not open_cells:
+            record["refunded"].append(name)
+            volley["outcome"] = "refunded"
+            continue
+        if shots_this_turn + len(open_cells) > TURN_SHOT_CAP:
+            carry.append({**volley, "carried": True})
+            record["carried"].append(name)
+            volley["outcome"] = "carried"
+            continue
+        fired = []
+        for cell in open_cells:          # a shot after the last ship sinks would land in a finished game
+            if not game.over:
+                fired.append(game.fire(cell, name, turn))
+        shots_this_turn += len(fired)
+        last_counted[name] = turn
+        volley["outcome"] = "fired"
+        record["volleys"].append({"by": name, "listed": volley["cells"],
+                                  "shots": [{"cell": s["cell"], "result": s["result"],
+                                             "hint": s["hint"], "ship": s["ship"]} for s in fired],
+                                  "points": sum(s["points"] for s in fired)})
+    if game.over and game.end_turn is None:
+        game.end_turn = turn
+    return record, carry
+
+
 def simulate(seed, finished_target=3, current_min_shots=26):
     rng = random.Random(seed)
     start = datetime(2026, 10, 12, 9, 0, tzinfo=ET)
@@ -206,37 +253,9 @@ def simulate(seed, finished_target=3, current_min_shots=26):
         posted = [p for p in PLAYERS if (turn - p[3]) % p[2] == 0 and rng.random() < 0.85]
         rng.shuffle(posted)
         fresh = [{"by": p[0], "cells": choose_cells(game, p[1], rng), "carried": False} for p in posted]
-        queue = carry + fresh
-        carry = []
-        record = {"turn": turn, "time": (start + timedelta(hours=turn - 1)).isoformat(),
-                  "game": game.id, "volleys": [], "skipped": [], "refunded": [], "carried": []}
-        shots_this_turn = 0
-        for volley in queue:
-            name = volley["by"]
-            if game.over:
-                record["refunded"].append(name)
-                continue
-            if not volley["carried"] and name in last_counted and turn - last_counted[name] < COOLDOWN_TURNS:
-                record["skipped"].append(name)
-                continue
-            open_cells = [parse_cell(x) for x in volley["cells"] if parse_cell(x) not in game.fired]
-            open_cells = open_cells[:SHOTS_PER_VOLLEY]
-            if not open_cells:
-                record["refunded"].append(name)
-                continue
-            if shots_this_turn + len(open_cells) > TURN_SHOT_CAP:
-                carry.append({**volley, "carried": True})
-                record["carried"].append(name)
-                continue
-            fired = [game.fire(cell, name, turn) for cell in open_cells]
-            shots_this_turn += len(fired)
-            last_counted[name] = turn
-            record["volleys"].append({"by": name, "listed": volley["cells"],
-                                      "shots": [{"cell": s["cell"], "result": s["result"],
-                                                 "hint": s["hint"], "ship": s["ship"]} for s in fired],
-                                      "points": sum(s["points"] for s in fired)})
-        if game.over:
-            game.end_turn = turn
+        record = {"turn": turn, "time": (start + timedelta(hours=turn - 1)).isoformat(), "game": game.id}
+        resolved, carry = resolve_turn(game, carry + fresh, turn, last_counted)
+        record.update(resolved)
         turns.append(record)
         finished = [g for g in games if g.over]
         if len(finished) >= finished_target and not games[-1].over and len(games[-1].shots) >= current_min_shots:
@@ -246,6 +265,8 @@ def simulate(seed, finished_target=3, current_min_shots=26):
 
 # ---------------------------------------------------------------- summaries
 def game_summary(game):
+    if not game.shots:
+        return {"first_blood": None, "admiral": None, "sharpshooter": None, "medal": None, "players": []}
     shots = pd.DataFrame(game.shots).assign(hit=lambda d: d["result"] != "miss")
     first_blood = shots.loc[shots["hit"], "by"].iloc[0] if shots["hit"].any() else None
     per = shots.groupby("by").agg(shots=("hit", "size"), hits=("hit", "sum"))
@@ -266,6 +287,9 @@ def game_summary(game):
 def leaderboards(games):
     rows = [{"game": g.id, "finished": g.over, "player": s["by"], "points": s["points"],
              "hit": s["result"] != "miss"} for g in games for s in g.shots]
+    if not rows:
+        return pd.DataFrame(columns=["player", "points", "shots", "hits", "games", "fin_points", "finished_games",
+                                     "avg", "hit_rate"])
     df = pd.DataFrame(rows)
     per_game = df.groupby(["player", "game", "finished"], as_index=False).agg(
         points=("points", "sum"), shots=("hit", "size"), hits=("hit", "sum"))
@@ -297,7 +321,9 @@ def fmt_time(iso):
     return t.strftime("%a %b %d · %I:%M %p ET").replace(" 0", " ")
 
 
-def render_turn_post(game, record, board):
+def render_turn_post(game, record, board, next_game=None):
+    """The TURN reply. When this turn sank the fleet, it also reveals the layout and, given next_game,
+    opens the next game with its commitment."""
     sunk_cells = {x for s in game.sunk for x in s["cells"]}
     out = [f"GHOST FLEET · TURN {record['turn']} · GAME {game.id} · {fmt_time(record['time'])}", "THIS TURN"]
     for v in record["volleys"]:
@@ -314,6 +340,10 @@ def render_turn_post(game, record, board):
         out.append("SKIPPED (cooldown): " + ", ".join(record["skipped"]))
     if record["refunded"]:
         out.append("REFUNDED: " + ", ".join(record["refunded"]))
+    if not (record["volleys"] or record["skipped"] or record["refunded"] or record.get("carried")):
+        out.append("No volleys this turn.")
+    if record.get("carried"):
+        out.append("CARRIED to next turn: " + ", ".join(record["carried"]))
     out.append("")
     out += board_lines(game)
     out.append("LEGEND: 💥 hit · 💀 sunk · 🔴 miss HOT · 🟡 miss WARM · 🔵 miss COLD · 🌊 open")
@@ -326,19 +356,30 @@ def render_turn_post(game, record, board):
         out.append(f"MISS {band.upper()}: " + (" ".join(cells) or "none"))
     out.append("INTEL: " + (" · ".join(f"{i['line']} holds {i['count']} ship cells" for i in game.intel) or "none yet"))
     sunk_names = {s["ship"] for s in game.sunk}
-    out.append("AFLOAT: " + " ".join(f"{n}({l})" for n, l in FLEET if n not in sunk_names))
+    out.append("AFLOAT: " + (" ".join(f"{n}({l})" for n, l in FLEET if n not in sunk_names) or "none"))
     found = sum(1 for s in game.shots if s["result"] != "miss")
     out.append(f"SWARM: {len(game.shots)} shots · {found}/{SHIP_CELLS} ship cells found · "
                f"Gold ≤45 · Silver ≤60 · Bronze ≤75 (random ≈{round(RANDOM_BASELINE)})")
-    gp = pd.DataFrame(game.shots).groupby("by")["points"].sum().sort_values(ascending=False).head(5)
-    out.append("GAME: " + " · ".join(f"{p} {int(v)}" for p, v in gp.items()))
+    if game.shots:
+        gp = pd.DataFrame(game.shots).groupby("by")["points"].sum().sort_values(ascending=False).head(5)
+        out.append("GAME: " + " · ".join(f"{p} {int(v)}" for p, v in gp.items()))
+    else:
+        out.append("GAME: no shots yet")
     top_total = board.sort_values(["points", "hit_rate"], ascending=False).head(3)
-    out.append("SEASON TOTAL: " + " · ".join(f"{i + 1} {r.player} {int(r.points)}"
-                                             for i, r in enumerate(top_total.itertuples())))
+    out.append("SEASON TOTAL: " + (" · ".join(f"{i + 1} {r.player} {int(r.points)}"
+                                              for i, r in enumerate(top_total.itertuples())) or "none yet"))
     top_avg = board[board["finished_games"] >= MIN_GAMES_FOR_AVG].sort_values(["avg", "hit_rate"], ascending=False).head(3)
-    out.append("SEASON AVG/GAME: " + " · ".join(f"{i + 1} {r.player} {r.avg:.1f}"
-                                                for i, r in enumerate(top_avg.itertuples())))
+    out.append("SEASON AVG/GAME: " + (" · ".join(f"{i + 1} {r.player} {r.avg:.1f}"
+                                                 for i, r in enumerate(top_avg.itertuples())) or "none yet"))
     out.append(f"COMMIT G{game.id}: {game.commit}")
+    if game.over:
+        s = game_summary(game)
+        medal = f"{s['medal']} medal" if s["medal"] else "no medal"
+        out.append(f"GAME {game.id} OVER in {len(game.shots)} shots · {medal} · First Blood {s['first_blood']} · "
+                   f"Sharpshooter {s['sharpshooter'] or 'none'} · Admiral {s['admiral']}")
+        out.append(f"REVEAL G{game.id}: {game.reveal}")
+    if next_game is not None:
+        out.append(f"NEW GAME {next_game.id} · COMMIT G{next_game.id}: {next_game.commit}")
     out.append("NEXT: reply to the offer with FIRE + up to 4 cells. Your first 2 open cells fire. One volley per 2 hours.")
     return "\n".join(out)
 
@@ -356,7 +397,7 @@ def sonar_mix(trials=3000, seed=1):
     return {k: round(v / total, 3) for k, v in counts.items()}
 
 
-def export(games, turns):
+def export(games, turns, demo=True, ends="2026-10-14T20:00:00-04:00", status="RUNNING"):
     board = leaderboards(games)
     current = games[-1]
     summaries = {g.id: game_summary(g) for g in games}
@@ -386,10 +427,10 @@ def export(games, turns):
                         "first_blood": s["first_blood"], "admiral": s["admiral"],
                         "sharpshooter": s["sharpshooter"], "shots": g.shots, "intel": g.intel})
     state = {
-        "demo": True,
+        "demo": demo,
         "updated": turns[-1]["time"],
         "season": {
-            "name": "Season 1", "ends": "2026-10-14T20:00:00-04:00", "status": "RUNNING", "turn": turns[-1]["turn"],
+            "name": "Season 1", "ends": ends, "status": status, "turn": turns[-1]["turn"],
             "rules": {"size": SIZE, "fleet": [{"ship": n, "len": l} for n, l in FLEET],
                       "medals": [{"medal": m, "max_shots": cap} for m, cap in MEDALS],
                       "random_baseline": RANDOM_BASELINE, "cooldown_turns": COOLDOWN_TURNS,

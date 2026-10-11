@@ -15,7 +15,7 @@ scheduler ──► run_cycle ──► halt? ──► file lock ──► reco
 
 ## Scheduler
 
-- **Maritime:** `agents/factcheck/server.py` is a stdlib HTTP server. `GET /schedules` publishes `0 */3 * * *` (UTC) with
+- **Maritime:** `agents/factcheck/server.py` plugs into the shared stdlib HTTP shim (`canvas_core/server.py`). `GET /schedules` publishes `0 */3 * * *` (UTC) with
   prompt `run-cycle`, and Maritime turns that into a wake trigger. `POST /chat` starts a cycle in a background
   thread only when `source == "scheduled"` and the message is exactly `run-cycle`. Any other chat text gets a
   canned reply and changes nothing (`test_server_chat_only_runs_on_exact_scheduled_prompt`).

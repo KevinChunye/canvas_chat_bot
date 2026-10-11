@@ -5,7 +5,6 @@ fake values for every test, so nothing real can end up in test output.
 Agent-specific fixtures live in each agent's own conftest (tests/<agent>/conftest.py).
 """
 
-import json
 import re
 from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs, urlparse
