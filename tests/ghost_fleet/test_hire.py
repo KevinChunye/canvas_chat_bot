@@ -258,3 +258,27 @@ def test_dry_run_previews_discovery_without_writing(cfg, store, canvas, offer, c
 def test_a_computation_only_provider_qualifies_but_a_fact_checker_does_not(cfg):
     assert hire.score_offer("SERVICE OFFER: I write and run Python code for you.")[0] >= cfg.hire_min_score
     assert hire.score_offer(CLAIMS_OFFER)[0] < cfg.hire_min_score
+
+
+def test_with_no_suitable_peer_the_writeup_documents_the_attempts(cfg, tmp_path, monkeypatch):
+    from agents.ghost_fleet import sandbox
+    from agents.ghost_fleet.report import build_report, build_writeup, evidence, log_excerpt
+    from agents.ghost_fleet.store import Store
+    monkeypatch.setattr(sandbox, "SANDBOX_DIR", tmp_path / "sandbox")
+    sandbox.reset(cfg)
+    forum = tmp_path / "sandbox" / "forum.json"
+    data = json.loads(forum.read_text())
+    for name in ("quickhash", "ledger"):                               # only the unrelated offer is left
+        data["entries"][str(data["peer_offers"][name])]["deleted"] = True
+    forum.write_text(json.dumps(data))
+    sandbox.auto(cfg, 20, seed=3)
+
+    scfg = sandbox.sandbox_config(cfg)
+    s = Store(scfg.db_path)
+    ev = evidence(scfg, s)
+    assert ev["hires"] == [] and ev["discoveries"] and all(d["chosen_entry_id"] is None for d in ev["discoveries"])
+    assert any(" discovery game:1 " in line for line in log_excerpt(ev["events"]))
+    assert "none suitable" in build_report(scfg, s)
+    pages = build_writeup(scfg, s, tmp_path / "nopeer.pdf", sandbox=True)
+    s.close()
+    assert 2 <= pages <= 3

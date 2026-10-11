@@ -459,6 +459,9 @@ class TurnRun:
         offers_seen, candidates = hire.discover(self.entries, self_id, cfg.hire_min_score, tried, self.track_record())
         chosen = candidates[0] if candidates and candidates[0]["suitable"] else None
         store.add_discovery(self.run_id, game_id, offers_seen, candidates, chosen["entry_id"] if chosen else None)
+        store.add_event(f"game:{game_id}", self.run_id, "discovery",
+                        {"offers": offers_seen, "chosen": chosen["entry_id"] if chosen else None,
+                         "top": [[c["entry_id"], c["score"], c["suitable"]] for c in candidates[:3]]})
         self.log("discovery", game=game_id, offers_seen=offers_seen, candidates=candidates[:5],
                  chosen=chosen["entry_id"] if chosen else None)
         if chosen is None:
@@ -586,7 +589,7 @@ class Poster:
             self.store.set_canvas_entry(key, entry_id)
             if self.verify(post, entry_id):
                 self.store.confirm_post(key, entry_id, "verified after post")
-                self._event(key, "confirmed", canvas_entry_id=entry_id)
+                self._event(key, "confirmed", canvas_entry_id=entry_id, how="re-fetched, author and header match")
                 return "confirmed"
             self._event(key, "verify_failed", canvas_entry_id=entry_id)
             return "unverified"

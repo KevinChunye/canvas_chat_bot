@@ -53,6 +53,44 @@ def evidence(cfg: Config, store: Store) -> dict:
     }
 
 
+def log_excerpt(events: list[dict], limit: int = 10) -> list[str]:
+    """A few lines from the events table that show behaviour the forum does not: discovery scans, audit
+    decisions, post verification and safety stops."""
+    def last(test, n):
+        return [e for e in events if test(e["event"])][-n:]
+    picked = (last(lambda name: name == "discovery", 3) + last(lambda name: name.startswith("hire_"), 4)
+              + last(lambda name: name == "confirmed", 2)
+              + last(lambda name: any(name.endswith(s) for s in SAFETY_EVENTS), 2))
+    picked = sorted({e["id"]: e for e in picked}.values(), key=lambda e: e["id"])[-limit:]
+    def compact(detail: str) -> str:
+        try:
+            return json.dumps(json.loads(detail), separators=(",", ":"))
+        except ValueError:
+            return detail
+    return [f"{e['at'][:16].replace('T', ' ')} {e['event']} {e['subject'] or ''} {compact(e['detail'])[:80]}"
+            for e in picked]
+
+
+def example_request(cfg: Config, store: Store) -> str | None:
+    """The request the agent sends, for the first revealed game. Used to document the format when no request
+    has been sent yet."""
+    from . import hire
+    from .runner import rebuild
+    games = [dict(r) for r in store.games()]
+    finished = [g for g in games if g["end_turn"] is not None]
+    if not finished:
+        return None
+    game = rebuild(games, [dict(r) for r in store.shots()], str)[finished[0]["id"] - 1]
+    shots = [{"n": s["n"], "cell": s["cell"], "result": s["result"], "hint": s["hint"]} for s in game.shots]
+    return hire.request_body(hire.token_for(game.id, 0), game.id, game.commit, game.reveal, shots,
+                             f"{cfg.hire_deadline_hours:g} hours after posting")
+
+
+def _span(scans: list[dict]) -> str:
+    low, high = min(d["offers_seen"] for d in scans), max(d["offers_seen"] for d in scans)
+    return str(low) if low == high else f"{low}-{high}"
+
+
 def _check_cells(h: dict) -> list[str]:
     return [("pass" if h["checks"].get(name) else "fail") if h["checks"] else "-"
             for name in ("proof", "commit", "rows", "mismatches")]
@@ -88,6 +126,7 @@ def build_report(cfg: Config, store: Store) -> str:
         out.append(f"- `{key}` {p['status']} (attempts {p['attempts']}): {where}")
     out += ["", "## Safety events", ""]
     out += [f"- {e['at']} {e['event']} {e['subject'] or ''} {e['detail']}" for e in ev["safety"]] or ["- none"]
+    out += ["", "## Log excerpt", "", "```"] + (log_excerpt(ev["events"]) or ["(no events yet)"]) + ["```"]
     return "\n".join(out) + "\n"
 
 
@@ -99,7 +138,7 @@ def build_writeup(cfg: Config, store: Store, path, sandbox: bool = False) -> int
     from reportlab.lib.pagesizes import letter
     from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
     from reportlab.lib.units import inch
-    from reportlab.platypus import Paragraph, Preformatted, SimpleDocTemplate, Spacer, Table, TableStyle
+    from reportlab.platypus import Paragraph, Preformatted, SimpleDocTemplate, Table, TableStyle
 
     ev = evidence(cfg, store)
     base = getSampleStyleSheet()
@@ -153,6 +192,8 @@ def build_writeup(cfg: Config, store: Store, path, sandbox: bool = False) -> int
                 "later TURN posts and on the spectator page.")]
 
     request = next((ev["posts"][f"hire:{h['token']}"]["body"] for h in hires if f"hire:{h['token']}" in ev["posts"]), None)
+    example = request is None
+    request = request or example_request(cfg, store)
     story += [p("2. Technical setup", h2)]
     story += bullets([
         "Python 3.11 with SQLite memory and one scheduled run per hour (a Maritime cron trigger, or cron). No "
@@ -175,6 +216,9 @@ def build_writeup(cfg: Config, store: Store, path, sandbox: bool = False) -> int
     ])
     if request:
         lines = request.splitlines()
+        if example:
+            story.append(p("No request has been sent yet, so this is the request the agent would send for the first "
+                           "revealed game (the offer id is a placeholder):", small))
         story.append(Preformatted("\n".join(line if len(line) < 118 else line[:115] + "..." for line in
                                             lines[:2] + lines[4:6] + ["..."] + lines[10:16] + lines[-2:]), mono))
 
@@ -203,15 +247,21 @@ def build_writeup(cfg: Config, store: Store, path, sandbox: bool = False) -> int
                        f"{a(ev['audit_post']['canvas_entry_id'], 'turn ' + str(ev['audit_post']['turn']))}, and on "
                        f"the spectator page."))
     if scans:
-        rows = [["Scanned (UTC)", "Game", "Offers read", "Chosen", "Candidates (entry: score)"]]
-        for d in scans[:7]:
-            cands = ", ".join(f"{c['entry_id']}: {c['score']}" + ("" if c["suitable"] else " no")
-                              for c in d["candidates"][:5])
+        story.append(p(f"<b>Discovery scans.</b> {len(scans)} automatic scans from {scans[0]['at'][:16].replace('T', ' ')} "
+                       f"to {scans[-1]['at'][:16].replace('T', ' ')} UTC, reading {_span(scans)} offers each; "
+                       f"{sum(1 for d in scans if d['chosen_entry_id'])} found a suitable provider.", body))
+        rows = [["Scanned (UTC)", "Game", "Offers", "Chosen", "Top candidates: entry, score (capabilities matched)"]]
+        shown = scans if len(scans) <= 7 else scans[:3] + [None] + scans[-3:]
+        for d in shown:
+            if d is None:
+                rows.append(["...", "", "", "", f"{len(scans) - 6} more scans in the evidence report"])
+                continue
+            cands = "; ".join(f"{c['entry_id']}, {c['score']} ({'/'.join(c['capabilities']) or 'none'})"
+                              + ("" if c["suitable"] else ", unsuitable") for c in d["candidates"][:3])
             rows.append([d["at"][:16].replace("T", " "), str(d["game_id"]), str(d["offers_seen"]),
                          p(a(d["chosen_entry_id"]) if d["chosen_entry_id"] else "none suitable", small),
                          p(cands or "-", small)])
-        story.append(Spacer(1, 4))
-        story.append(table(rows, [1.0 * inch, 0.45 * inch, 0.7 * inch, 0.85 * inch, 3.9 * inch]))
+        story.append(table(rows, [1.0 * inch, 0.45 * inch, 0.5 * inch, 0.85 * inch, 4.1 * inch]))
 
     story += [p("4. Safety controls", h2)]
     story += bullets([
@@ -241,16 +291,21 @@ def build_writeup(cfg: Config, store: Store, path, sandbox: bool = False) -> int
     links = [f"Service offer: {a(ev['offer_entry_id'])}"]
     if ev["turns_confirmed"]:
         links.append(f"First TURN post (game 1 commitment): {a(ev['turns_confirmed'][0]['canvas_entry_id'])}")
+    for g in store.games():
+        revealed = store.turn_row(g["end_turn"]) if g["end_turn"] is not None else None
+        if revealed is not None and revealed["canvas_entry_id"] and len(links) < 6:
+            links.append(f"Game {g['id']} reveal (what an auditor checks): {a(revealed['canvas_entry_id'])}")
     if ev["final_post"] and ev["final_post"]["canvas_entry_id"]:
         links.append(f"Final reveal: {a(ev['final_post']['canvas_entry_id'])}")
     for h in hires[:6]:
         links.append(f"Game {h['game_id']} audit: request {a(h['request_entry_id'])}, reply {a(h['reply_entry_id'])}, "
                      f"{h['status']}")
     story += bullets(links)
-    excerpt = [f"{e['at'][:19]}Z {e['event']} {e['subject'] or ''} {e['detail'][:70]}"
-               for e in ev["events"] if e["event"].startswith("hire_") or e["event"].endswith("capped")][-8:]
+    excerpt = log_excerpt(ev["events"])
     if excerpt:
-        story += [p("Log excerpt (events table):", small), Preformatted("\n".join(excerpt), mono)]
+        story += [p("Log excerpt from the agent's events table (UTC): discovery scans, audit decisions, post "
+                    "verification and safety stops, none of which is visible in the forum.", small),
+                  Preformatted("\n".join(excerpt), mono)]
 
     pages = []
     doc = SimpleDocTemplate(str(path), pagesize=letter, leftMargin=0.7 * inch, rightMargin=0.7 * inch,
