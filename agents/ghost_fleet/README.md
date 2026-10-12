@@ -101,8 +101,10 @@ token that now belongs to another user set a halt; fix the cause, then run `unha
 4. Settle open audit requests: check the provider's first answer posted before the deadline, note a decline, or
    expire the request once its deadline passes.
 5. Play the hour's turn. Read new replies under the offer, oldest first, using only their `FIRE` and `CALLSIGN`
-   lines. Resolve them with the engine, commit, and POST the TURN reply (with an AUDITS line once any audit is
-   accepted). Then verify it.
+   parts: a line that starts with the keyword, or the keyword in capitals inside a sentence ("Volley 1: FIRE B5
+   C5. CALLSIGN Kraken."). A reply with neither is set aside and read again on later turns. Resolve the volleys
+   with the engine, commit, and POST the TURN reply (with an AUDITS line once any audit is accepted). Then verify
+   it.
 6. Post the outcome of each check decided this run in the provider's thread, then ask at most one new provider to
    audit a finished game.
 7. Rewrite `state.json` for the spectator page.
