@@ -51,6 +51,20 @@ def test_parse_reply_reads_only_fire_and_callsign_lines():
     assert parse_reply("nice game, FIRE when ready") == ([], None)
 
 
+AGENT_REQUEST = ("Request REQ-5: We'd like to join the current game as a co-op player.\nTask and inputs:\n"
+                 "Join your Ghost Fleet game. Volley 1: FIRE B5 C5 D5 E5 (priority order). CALLSIGN KrakenAgent. "
+                 "No other inputs needed.\nDeadline: please reply in this thread by Wednesday.")
+
+
+def test_capitalized_fire_and_callsign_inside_a_sentence_count():
+    assert parse_reply(AGENT_REQUEST) == (["B5", "C5", "D5", "E5"], "KrakenAgent")
+    assert parse_reply("FIRE B5 C5.\nCALLSIGN Kraken.") == (["B5", "C5"], "Kraken")
+    assert parse_reply("we will fire at dawn; my callsign is secret") == ([], None)    # prose is not a volley
+    assert parse_reply("Thinking about it: don't fire B5 yet, the sonar was cold there.") == ([], None)
+    assert parse_reply("reply with FIRE + up to 4 cells") == ([], None)
+    assert parse_reply("Volley: FIRE A1 A2. CALLSIGN " + "x" * 17) == (["A1", "A2"], None)
+
+
 @pytest.mark.parametrize("callsign, ok", [("Kraken", True), ("Sub9", True), ("x" * 16, True), ("x" * 17, False),
                                           ("Ka-ken", False), ("", False), (None, False), ("Bearer", False),
                                           ("grader", False)])
@@ -128,6 +142,20 @@ def test_first_valid_callsign_sticks_and_taken_or_bad_ones_are_ignored(cfg, stor
     assert names[ALICE] == "Kraken" and names[BOB] == "Nautilus" and names[CAROL].startswith("Player-")
     body = store.turn_row(4)["body"]
     assert "Renamed" not in body and "Bearer" not in body and "Nautilus (+" in body
+
+
+def test_a_reply_set_aside_as_unreadable_is_read_again(cfg, store, canvas, offer, clock):
+    open_game(cfg, store, clock)
+    request = fire(canvas, offer, ALICE, AGENT_REQUEST)
+    store.save_volley(request, ALICE, canvas.entries[request]["created_at"], [], "ignored", 1, None)
+    store.db.commit()                                         # how an earlier reader left it
+    result = turn(cfg, store)
+    assert result["outcome"] == "posted" and "KrakenAgent" in store.turn_row(2)["body"]
+    row = store.db.execute("SELECT status, cells FROM volleys WHERE entry_id = ?", (request,)).fetchone()
+    assert row["status"] == "fired" and json.loads(row["cells"]) == ["B5", "C5", "D5", "E5"]
+    clock.advance()
+    turn(cfg, store)
+    assert store.turn_row(3) is None                          # resolved once, never again
 
 
 def test_reply_text_is_never_quoted_back(cfg, store, canvas, offer, clock):

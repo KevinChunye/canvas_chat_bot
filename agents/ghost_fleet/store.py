@@ -221,7 +221,9 @@ class Store:
     # ------------------------------------------------------------------ volleys and players
 
     def known_entry_ids(self) -> set[int]:
-        return {row[0] for row in self.db.execute("SELECT entry_id FROM volleys")}
+        """Replies already handled. Ignored ones are not included: they are read again each turn, so a reply the
+        reader could not use before (or one edited since) still counts once it can be read."""
+        return {row[0] for row in self.db.execute("SELECT entry_id FROM volleys WHERE status != 'ignored'")}
 
     def carried_volleys(self) -> list[sqlite3.Row]:
         return self.db.execute("SELECT * FROM volleys WHERE status = 'carried' ORDER BY created_at, entry_id"
@@ -235,8 +237,8 @@ class Store:
                     turn: int | None, game_id: int | None) -> None:
         self.db.execute(
             "INSERT INTO volleys(entry_id, player_id, created_at, cells, status, turn, game_id) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(entry_id) DO UPDATE SET status = excluded.status, "
-            "turn = excluded.turn, game_id = excluded.game_id",
+            "VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(entry_id) DO UPDATE SET cells = excluded.cells, "
+            "status = excluded.status, turn = excluded.turn, game_id = excluded.game_id",
             (entry_id, player_id, created_at, json.dumps(cells), status, turn, game_id))
 
     def players(self) -> list[sqlite3.Row]:
