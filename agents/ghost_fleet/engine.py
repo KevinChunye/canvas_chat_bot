@@ -321,11 +321,11 @@ def fmt_time(iso):
     return t.strftime("%a %b %d · %I:%M %p ET").replace(" 0", " ")
 
 
-def render_turn_post(game, record, board, next_game=None, final=False, audits=None):
+def render_turn_post(game, record, board, next_game=None, final=False, audits=None, odds=None):
     """The TURN reply. When this turn sank the fleet, it also reveals the layout and, given next_game,
     opens the next game with its commitment. final=True is the season's last post: the unfinished game
     stops and its layout is revealed, so its commitment can be checked like every other game's. audits is the
-    house's line of accepted independent audits, if any."""
+    house's line of accepted independent audits, if any, and odds the checked odds of a blind volley."""
     sunk_cells = {x for s in game.sunk for x in s["cells"]}
     if final:
         out = [f"GHOST FLEET · SEASON OVER · GAME {game.id} · {fmt_time(record['time'])}", "THIS TURN",
@@ -379,6 +379,8 @@ def render_turn_post(game, record, board, next_game=None, final=False, audits=No
     out.append("SEASON AVG/GAME: " + (" · ".join(f"{i + 1} {r.player} {r.avg:.1f}"
                                                  for i, r in enumerate(top_avg.itertuples())) or "none yet"))
     out.append(f"COMMIT G{game.id}: {game.commit}")
+    if odds:
+        out.append(f"ODDS: {odds}")
     if audits:
         out.append(f"AUDITS: {audits}")
     if game.over:

@@ -2,9 +2,10 @@
 sandbox turn runs exactly the production code: parse replies, resolve, commit, post, verify, hire. Nothing leaves
 the machine. State lives in state/ghost_fleet_sandbox/ (forum.json, the database, state.json, the spectator page).
 
-Three simulated peers post service offers so hiring can be rehearsed: Quick Hash (looks capable, but copies the
-commitment instead of computing, so its audits fail), Ledger Lens (does the work) and a haiku service (unrelated).
-Peers read only the posted request text, and answer before the next sandbox turn.
+Four simulated peers post service offers so hiring can be rehearsed: Dice Den (exact dice and card odds, answers
+the odds request), Quick Hash (looks capable, but copies the commitment instead of computing, so its audits fail),
+Ledger Lens (does the work) and a haiku service (unrelated). Peers read only the posted request text, and answer
+before the next sandbox turn.
 """
 
 import dataclasses
@@ -26,7 +27,9 @@ from .store import Store
 
 SANDBOX_DIR = REPO_ROOT / "state" / "ghost_fleet_sandbox"
 HOUSE_ID, COURSE, TOPIC = 1, 1, 10
-PEERS = [  # (name, offer, how it answers an audit request)
+PEERS = [  # (name, offer, how it answers a request)
+    ("dicelab", "Dice Den: what I do is compute exact dice and card probabilities, as fractions, with a simulation "
+                "cross-check.", "odds"),
     ("quickhash", "SERVICE OFFER: Quick Hash. SHA-256 hashing, checksums and log audits, computed in Python.", "lazy"),
     ("ledger", "SERVICE OFFER: Ledger Lens. I audit game logs: SHA-256 hash checks and recomputation in Python. "
                "Reply with your data and a deadline.", "honest"),
@@ -89,7 +92,15 @@ class SandboxCanvas:
             peer = self.user_id(name)
             if how is None or any(e["parent_id"] == entry["id"] and e["user_id"] == peer for e in self._entries()):
                 continue
-            request = hire.parse_request(strip_html(entry["message"]))
+            text = strip_html(entry["message"])
+            if how == "odds":
+                request = hire.parse_odds_request(text)
+                if request is not None:
+                    answers = hire.odds_expected(request["deck"], request["marked"], request["draws"])
+                    answered.append(self.reply(name, hire.odds_answer_lines(request["token"], answers),
+                                               parent_id=entry["id"]))
+                continue
+            request = hire.parse_request(text)
             if request is None:
                 continue
             answers = hire.expected_answers(request["token"], request["commit"], request["reveal"], request["shots"])

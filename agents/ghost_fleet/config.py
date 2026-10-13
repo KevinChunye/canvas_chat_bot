@@ -42,6 +42,8 @@ class Config:
     hire_deadline_hours: float
     hire_max_providers: int
     hire_min_score: int
+    odds_enabled: bool
+    odds_min_score: int
 
     data_dir: Path
     config_path: Path = DEFAULT_CONFIG_PATH
@@ -108,6 +110,8 @@ def load_config(path: Path | str | None = None) -> Config:
         hire_deadline_hours=float(hire.get("deadline_hours", 12)),
         hire_max_providers=int(hire.get("max_providers_per_game", 2)),
         hire_min_score=int(hire.get("min_score", 2)),
+        odds_enabled=bool(hire.get("odds", True)),
+        odds_min_score=int(hire.get("odds_min_score", 5)),
         data_dir=data_dir,
         config_path=path,
     )

@@ -333,16 +333,22 @@ def test_sandbox_season_posts_clean_turns_and_never_leaks_a_live_layout(cfg, tmp
     assert live.reveal not in state and "seed" not in state
     assert json.loads(state)["current"]["commit"] == live.commit
 
-    # hiring was rehearsed against the simulated peers: the lazy one rejected, the honest one accepted
+    # hiring was rehearsed against the simulated peers: the odds service accepted, then for audits the lazy peer
+    # rejected and the honest one accepted
     scfg = sandbox.sandbox_config(cfg)
     s = Store(scfg.db_path)
-    statuses = [h["status"] for h in s.hires()]
+    [odds] = s.hires(0)
+    assert odds["status"] == "accepted" and odds["tip"] in (3, 4)
+    statuses = [h["status"] for h in s.hires() if h["game_id"] != 0]
     assert statuses[:2] == ["rejected", "accepted"] and s.discoveries()
     assert any("AUDITS: G1 commitment holds" in (r["body"] or "") for r in s.turn_rows())
+    assert any("\nODDS: blind 2-shot volley at a fresh board: at least one hit 1547/4950" in (r["body"] or "")
+               for r in s.turn_rows())
     report = build_report(scfg, s)
     pages = build_writeup(scfg, s, tmp_path / "writeup.pdf", sandbox=True)
     s.close()
     assert "entry_id=" in report and "| rejected |" in report and "| accepted |" in report
+    assert "## Odds requests, replies and checks" in report and "| pass | pass | pass | accepted |" in report
     assert (tmp_path / "writeup.pdf").read_bytes().startswith(b"%PDF") and 2 <= pages <= 3
 
 

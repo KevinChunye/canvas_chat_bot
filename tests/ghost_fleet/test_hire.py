@@ -15,6 +15,14 @@ from tests.conftest import SELF_ID
 from tests.ghost_fleet.conftest import fire, turn
 
 LEDGER, CHECKSUM, CLAIMS, POET, CHATTY = 601, 602, 603, 604, 605
+ODDS_DESK, CARD_DESK, ESCROW = 611, 612, 613
+# Worded like real offers in the forum; the first never says "offer" or "service".
+ODDS_OFFER = ("Game Odds Lab: exact dice and card probabilities\nWhat I do: compute exact probabilities for dice and "
+              "card mechanics in games, real or invented. You get the exact answer as a fraction and a decimal, with "
+              "a simulation cross-check.")
+CARD_OFFER = "SERVICE OFFER: Card Desk. Exact card and dice probabilities, as fractions."
+ESCROW_OFFER = ("SERVICE OFFER: Escrow of record. I certify exchanges with a SHA-256 hash anyone can recompute.\n"
+                "What I do not certify: whether the answer is correct.")
 LEDGER_OFFER = ("SERVICE OFFER: Ledger Lens. I audit game logs: SHA-256 hash checks and recomputation in Python. "
                 "Reply with your data and a deadline.")
 CHECKSUM_OFFER = "SERVICE OFFER: Checksum Desk. I verify checksums and commitments."
@@ -35,6 +43,10 @@ def finish_game_one(cfg, store, canvas, offer, clock):
     for n in range(0, 17, 2):
         fire(canvas, offer, 300 + n, "FIRE " + " ".join(ship_cells[n:n + 2]))
     return turn(cfg, store)
+
+
+def audit_scans(store):
+    return [d for d in store.discoveries() if d["game_id"] != hire.ODDS]
 
 
 def house_posts_under(canvas, entry_id):
@@ -63,7 +75,7 @@ def test_discovery_chooses_by_capability_and_logs_every_candidate(cfg, store, ca
     result = finish_game_one(cfg, store, canvas, offer, clock)
     assert "requested from offer" in result["summary"]
 
-    [found] = store.discoveries()
+    [found] = audit_scans(store)
     candidates = {c["entry_id"]: c for c in json.loads(found["candidates"])}
     assert found["offers_seen"] == 4 and found["chosen_entry_id"] == ledger
     assert candidates[checksum]["suitable"] and candidates[checksum]["score"] < candidates[ledger]["score"]
@@ -84,10 +96,10 @@ def test_discovery_chooses_by_capability_and_logs_every_candidate(cfg, store, ca
 def test_no_suitable_offer_is_logged_every_run_and_nothing_is_posted(cfg, store, canvas, offer, clock):
     poet = offer_post(canvas, POET, POET_OFFER)
     result = finish_game_one(cfg, store, canvas, offer, clock)
-    assert "no suitable auditor among 1 offers" in result["summary"]
+    assert "no suitable provider among 1 offers for the audit of game 1" in result["summary"]
     clock.advance()
     turn(cfg, store)
-    assert [d["chosen_entry_id"] for d in store.discoveries()] == [None, None]
+    assert [d["chosen_entry_id"] for d in audit_scans(store)] == [None, None]
     assert store.hires() == [] and house_posts_under(canvas, poet) == []
 
 
@@ -97,7 +109,7 @@ def test_a_request_is_never_repeated_while_it_waits(cfg, store, canvas, offer, c
     for _ in range(3):
         clock.advance()
         turn(cfg, store)
-    assert len(house_posts_under(canvas, ledger)) == 1 and len(store.discoveries()) == 1
+    assert len(house_posts_under(canvas, ledger)) == 1 and len(audit_scans(store)) == 1
 
 
 # --------------------------------------------------------------------------- checking and using the result
@@ -459,10 +471,10 @@ def test_a_scan_that_found_nobody_waits_an_hour_before_the_next(cfg, store, canv
     finish_game_one(cfg, store, canvas, offer, clock)
     clock.advance(0.5)
     turn(cfg, store)
-    assert len(store.discoveries()) == 1
+    assert len(audit_scans(store)) == 1
     clock.advance(0.5)
     turn(cfg, store)
-    assert len(store.discoveries()) == 2
+    assert len(audit_scans(store)) == 2
 
 
 def test_a_computation_only_provider_qualifies_but_a_fact_checker_does_not(cfg):
@@ -478,7 +490,7 @@ def test_with_no_suitable_peer_the_writeup_documents_the_attempts(cfg, tmp_path,
     sandbox.reset(cfg)
     forum = tmp_path / "sandbox" / "forum.json"
     data = json.loads(forum.read_text())
-    for name in ("quickhash", "ledger"):                               # only the unrelated offer is left
+    for name in ("dicelab", "quickhash", "ledger"):                    # only the unrelated offer is left
         data["entries"][str(data["peer_offers"][name])]["deleted"] = True
     forum.write_text(json.dumps(data))
     sandbox.auto(cfg, 20, seed=3)
@@ -486,9 +498,140 @@ def test_with_no_suitable_peer_the_writeup_documents_the_attempts(cfg, tmp_path,
     scfg = sandbox.sandbox_config(cfg)
     s = Store(scfg.db_path)
     ev = evidence(scfg, s)
-    assert ev["hires"] == [] and ev["discoveries"] and all(d["chosen_entry_id"] is None for d in ev["discoveries"])
+    assert ev["hires"] == ev["odds"] == [] and ev["discoveries"]
+    assert all(d["chosen_entry_id"] is None for d in ev["discoveries"])
+    assert {d["game_id"] for d in ev["discoveries"]} == {hire.ODDS, 1}             # both jobs were looked for
     assert any(" discovery game:1 " in line for line in log_excerpt(ev["events"]))
     assert "none suitable" in build_report(scfg, s)
     pages = build_writeup(scfg, s, tmp_path / "nopeer.pdf", sandbox=True)
     s.close()
     assert 2 <= pages <= 3
+
+
+# --------------------------------------------------------------------------- the odds of a blind volley
+
+def odds_reply(canvas, request_id, provider, wrong=False):
+    """A provider that reads only the posted request and counts the draw itself."""
+    request = hire.parse_odds_request(strip_html(canvas.entries[request_id]["message"]))
+    assert request is not None, "the request must carry everything needed to do the work"
+    answers = hire.odds_expected(request["deck"], request["marked"], request["draws"])
+    if wrong:
+        answers = dict(answers, q1=[17, 50])                             # 17/100 + 17/100: forgets the overlap
+    return canvas.add(provider, hire.odds_answer_lines(request["token"], answers), parent_id=request_id,
+                      minutes_ago=0)
+
+
+def test_the_odds_go_to_a_probability_service_at_the_start_of_the_season(cfg, store, canvas, offer, clock):
+    odds_desk = offer_post(canvas, ODDS_DESK, ODDS_OFFER)
+    escrow = offer_post(canvas, ESCROW, ESCROW_OFFER)
+    offer_post(canvas, LEDGER, LEDGER_OFFER)
+    preview = turn(cfg, store, dry_run=True)["summary"]
+    assert f"odds discovery: 3 offers read, best is entry {odds_desk} (score 6" in preview
+
+    result = turn(cfg, store)                                            # the opening post, then the odds request
+    assert result["outcome"] == "posted" and f"odds requested from offer {odds_desk}: confirmed" in result["summary"]
+    [request] = house_posts_under(canvas, odds_desk)
+    text = strip_html(request["message"])
+    for part in ("MECHANIC: a deck of 100 cards, 17 of them marked. Draw 2 cards without replacement.", "Q1: the",
+                 "Q3: the", "EXPECTED RESULT", "CHECKS:", "DEADLINE:", "If you cannot do this"):
+        assert part in text
+    assert "1547/4950" not in text                                       # the answers are never in the request
+    assert house_posts_under(canvas, escrow) == []
+    [scan] = [d for d in store.discoveries() if d["game_id"] == hire.ODDS]
+    scores = {c["entry_id"]: c["score"] for c in json.loads(scan["candidates"])}
+    assert scan["chosen_entry_id"] == odds_desk and scores[escrow] == 0
+
+
+def test_checked_odds_are_printed_in_every_turn_post(cfg, store, canvas, offer, clock):
+    odds_desk = offer_post(canvas, ODDS_DESK, ODDS_OFFER)
+    card_desk = canvas.add(CARD_DESK, CARD_OFFER, minutes_ago=100)
+    turn(cfg, store)
+    [request] = house_posts_under(canvas, odds_desk)
+    odds_reply(canvas, request["id"], ODDS_DESK)
+    clock.advance()
+    fire(canvas, offer, 201, "FIRE A1 A2")
+    result = turn(cfg, store)
+    [h] = store.hires(hire.ODDS)
+    assert h["status"] == "accepted" and h["tip"] == 4 and all(ok for _, ok in json.loads(h["checks"]))
+    body = store.turn_row(result["turn"])["body"]
+    assert ("ODDS: blind 2-shot volley at a fresh board: at least one hit 1547/4950 (31.3%) · every shot hits "
+            f"68/2475 (2.7%) · 0.34 hits on average (checked odds from offer {odds_desk})") in body
+    _, verdict = house_posts_under(canvas, odds_desk)
+    text = strip_html(verdict["message"])
+    assert text.startswith(f"CHECKED {h['token']}: ACCEPTED") and "Q1 pass · Q2 pass · Q3 pass" in text
+    assert f"TIP: 4 virtual coins for request {h['token']}" in text
+    for _ in range(2):                                                   # accepted once: never asked again
+        clock.advance()
+        turn(cfg, store)
+    assert len(house_posts_under(canvas, odds_desk)) == 2 and len(store.hires(hire.ODDS)) == 1
+    assert house_posts_under(canvas, card_desk) == []
+
+
+def test_wrong_odds_are_rejected_and_the_next_probability_service_is_asked(cfg, store, canvas, offer, clock):
+    odds_desk = offer_post(canvas, ODDS_DESK, ODDS_OFFER)
+    card_desk = canvas.add(CARD_DESK, CARD_OFFER, minutes_ago=100)        # as able, but newer
+    turn(cfg, store)
+    [request] = house_posts_under(canvas, odds_desk)
+    odds_reply(canvas, request["id"], ODDS_DESK, wrong=True)
+    clock.advance()
+    turn(cfg, store)
+    first, second = store.hires(hire.ODDS)
+    assert first["status"] == "rejected" and dict(json.loads(first["checks"])) == {"q1": False, "q2": True, "q3": True}
+    _, verdict = house_posts_under(canvas, odds_desk)
+    text = strip_html(verdict["message"])
+    assert text.startswith(f"CHECKED {first['token']}: REJECTED") and hire.ODDS_RULES["q1"] in text
+    assert "1547/4950" not in text and "TIP" not in text
+    assert second["provider_entry_id"] == card_desk and second["status"] == "requested"
+    assert all("ODDS:" not in (r["body"] or "") for r in store.turn_rows())
+
+
+def test_an_odds_request_is_never_repeated_while_it_waits(cfg, store, canvas, offer, clock):
+    odds_desk = offer_post(canvas, ODDS_DESK, ODDS_OFFER)
+    for _ in range(4):
+        turn(cfg, store)
+        clock.advance()
+    assert len(house_posts_under(canvas, odds_desk)) == 1 and len(store.hires(hire.ODDS)) == 1
+
+
+def test_a_closed_season_can_be_extended(cfg, store, canvas, offer, clock):
+    import dataclasses
+    assert turn(cfg, store)["outcome"] == "posted"                       # game 1 opens
+    clock.at = cfg.season_end + timedelta(hours=1)
+    assert "final reveal of game 1" in turn(cfg, store)["summary"]
+    assert store.get_state("season_closed")
+    longer = dataclasses.replace(cfg, season_end=cfg.season_end + timedelta(days=1))
+    clock.advance()
+    assert turn(longer, store)["outcome"] == "posted"                    # game 2 opens with a new commitment
+    assert len(store.games()) == 2 and not store.get_state("season_closed")
+    clock.at = longer.season_end + timedelta(hours=1)
+    assert "final reveal of game 2" in turn(longer, store)["summary"]
+
+
+@pytest.mark.parametrize("reply, accepted", [
+    ("Q1: 1547/4950 0.312525\nQ2: 68/2475 0.027475\nQ3: 17/50 0.34", True),
+    ("Q1 (at least 1 marked): 1547/4950\nQ2 (both 2 marked): 68/2475\nQ3: 2*17/100 = 17/50 = 0.34", True),
+    ("Q1: 1 - 6806/9900 = 3094/9900 ≈ 0.3125\n**Q2:** 136/4950 (2.75%)\n- Q3: 0.34.", True),
+    ("Q1: the chance of a hit\nQ1: 1547/4950\nQ2: 68/2475\nQ3: 17/50", True),
+    ("Q1: 0.3125\nQ2: 68/2475\nQ3: 17/50", False),                    # a rounded decimal is not exact
+    ("Q1: 1/2 or so\nQ2: 68/2475\nQ3: 17/50", False),
+])
+def test_odds_answers_are_read_from_common_formats(reply, accepted):
+    assert hire.check_odds_reply(reply, hire.odds_expected())[0] is accepted
+    assert hire.classify_odds_reply(reply) == "answer"
+    assert hire.classify_odds_reply("Sorry, a 100-card deck is outside my scope.") == "decline"
+
+
+def test_a_decline_for_the_odds_does_not_bar_the_provider_from_audits(cfg, store, canvas, offer, clock):
+    odds_desk = offer_post(canvas, ODDS_DESK, ODDS_OFFER)              # computes and checks: a possible auditor too
+    turn(cfg, store)
+    [request] = house_posts_under(canvas, odds_desk)
+    canvas.add(ODDS_DESK, "Sorry, a 100-card deck is outside my scope.", parent_id=request["id"], minutes_ago=0)
+    clock.advance()
+    game = rebuild([dict(r) for r in store.games()], [], str)[0]
+    cells = [engine.cell_name(c) for cs in game.fleet.values() for c in cs]
+    for n in range(0, 17, 2):
+        fire(canvas, offer, 300 + n, "FIRE " + " ".join(cells[n:n + 2]))
+    turn(cfg, store)                                                    # the decline is noted and game 1 sinks
+    assert store.hires(hire.ODDS)[0]["status"] == "declined"
+    [audit] = store.hires(1)
+    assert audit["provider_entry_id"] == odds_desk and audit["status"] == "requested"
