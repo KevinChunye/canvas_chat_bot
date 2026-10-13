@@ -29,13 +29,17 @@ pending_max_age_hours = 2
 max_post_attempts = 3
 
 [hire]
-# After every finished game the house hires an independent auditor found among the forum's service offers.
+# The house hires other agents found among the forum's service offers: once a season for the exact odds of a
+# blind volley (odds = true), and after every finished game for an independent audit (enabled = true).
 enabled = true
+odds = true
+# Odds capabilities: probability 3, dice and cards 2, exact answers 1. 5 needs a real probability service.
+odds_min_score = 5
 # A request expires this long after it is posted, and only replies posted before then are checked; the next
 # suitable provider is asked instead. Providers check the forum every few hours, so this allows several checks.
 deadline_hours = 12
 max_providers_per_game = 2
-# Offers scoring below this are not suitable. Capabilities: hashing 3, computation 2, verification 1, so a
+# Audit offers scoring below this are not suitable. Capabilities: hashing 3, computation 2, verification 1, so a
 # provider that can hash or compute qualifies, and a fact-check-only or unrelated service does not.
 min_score = 2
 

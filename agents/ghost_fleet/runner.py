@@ -7,8 +7,9 @@ with room under the write limit posts its turn, and later runs in that slot only
 is always posted before any volley resolves against it, and the first run after season_end reveals the unfinished
 game.
 
-The hire: settle open audit requests (check the provider's reply and post the outcome in its thread, note a
-decline, or expire it), then ask at most one new provider to audit a finished game (see hire.py).
+The hire: settle open requests (check the provider's reply and post the outcome in its thread, note a decline,
+or expire it), then ask at most one new provider: for the season's odds first, then to audit a finished game
+(see hire.py).
 
 Every post goes through the outbox: committed first, POSTed under the forum's write limit and the control line,
 verified by re-fetching, and found again by its header after a lost acknowledgement instead of being re-posted.
@@ -365,8 +366,10 @@ class TurnRun:
         game = next(g for g in games if g.id == plan.game_id)
         nxt = games[-1] if games[-1].id != plan.game_id else None
         board = engine.leaderboards(games)
+        hires = self.store.hires()
         plan.body = engine.render_turn_post(game, display_record(plan.record, name), board, next_game=nxt,
-                                            final=plan.final, audits=hire.audit_summary(self.store.hires()))
+                                            final=plan.final, audits=hire.audit_summary(hires),
+                                            odds=hire.odds_summary(hires))
         plan.header = plan.body.splitlines()[0]
         plan.message_html = to_html(plan.body)
         plan.commitments = [g.commit for g in games]
@@ -396,19 +399,40 @@ class TurnRun:
                     store.announce(game_id)
             if plan.final:
                 store.set_state("season_closed", "1", commit=False)
+            elif plan.new_games:
+                store.set_state("season_closed", None, commit=False)     # the season was extended after closing
             store.db.commit()
         except BaseException:
             store.db.rollback()
             raise
 
-    # ------------------------------------------------------------------ hiring an auditor
+    # ------------------------------------------------------------------ hiring other agents
 
     def hire_step(self, self_id: int) -> tuple[str | None, bool]:
-        """Ask at most one new provider to audit a finished game. Returns (note, failed)."""
+        """Send at most one new request per run: for the season's odds first, then to audit a finished game.
+        When no odds request goes out (no suitable provider yet), the audit step still runs. Returns (note,
+        failed)."""
+        notes = []
+        if self.cfg.odds_enabled and self.odds_needed():
+            note, failed, sent = self.request_work(hire.ODDS, self_id)
+            notes += [note] if note else []
+            if sent or failed:
+                return "; ".join(notes), failed
         game_id = self.game_needing_audit()
-        if game_id is None:
-            return None, False
-        return self.request_audit(game_id, self_id)
+        if game_id is not None:
+            note, failed, _ = self.request_work(game_id, self_id)
+            notes += [note] if note else []
+            return "; ".join(notes) or None, failed
+        return "; ".join(notes) or None, False
+
+    def odds_needed(self) -> bool:
+        """While the season runs: no odds request open or accepted, and fewer providers asked than allowed."""
+        if self.store.get_state("season_closed") or \
+                turn_time(self.cfg, turn_of(self.cfg, self.store.clock())) > self.cfg.season_end:
+            return False
+        hires = self.store.hires(hire.ODDS)
+        return not any(h["status"] in ("requested", "accepted") for h in hires) and \
+            len(hires) < self.cfg.hire_max_providers
 
     def settle_hire(self, h) -> str | None:
         """Check the provider's answer to an open request, if one came before the deadline. Its outcome, check by
@@ -428,11 +452,14 @@ class TurnRun:
                           and e["created_at"] and parse_time(e["created_at"]) <= deadline
                           and (e["parent_id"] == request_id or token in (e["text"] or ""))),
                          key=lambda e: (e["created_at"] or "", e["id"]))
-        kinds = [(e, hire.classify_reply(e["text"])) for e in replies]
+        odds = h["game_id"] == hire.ODDS
+        classify, check = (hire.classify_odds_reply, hire.check_odds_reply) if odds else \
+            (hire.classify_reply, hire.check_reply)
+        kinds = [(e, classify(e["text"])) for e in replies]
         answer = next((e for e, kind in kinds if kind == "answer"), None)
         if answer is not None:
             expected = json.loads(h["expected"])
-            accepted, checks = hire.check_reply(answer["text"], expected)
+            accepted, checks = check(answer["text"], expected)
             status = "accepted" if accepted else "rejected"
             tip = hire.tip_for(parse_time(h["created_at"]), deadline, parse_time(answer["created_at"])) \
                 if accepted else None
@@ -452,7 +479,8 @@ class TurnRun:
             if violations:
                 store.add_event(f"verdict:{token}", self.run_id, "post_rejected", {"reasons": violations})
             self.log(f"hire_{status}", token=token, reply=answer["id"], checks=checks, tip=tip)
-            return f"audit of game {h['game_id']} by offer {h['provider_entry_id']}: {status}"
+            what = "odds" if odds else f"audit of game {h['game_id']}"
+            return f"{what} by offer {h['provider_entry_id']}: {status}"
         declined = next((e for e, kind in kinds if kind == "decline"), None)
         if declined is not None:
             store.settle_hire(token, "declined", declined["id"])
@@ -489,14 +517,16 @@ class TurnRun:
                 return g["id"]
         return None
 
-    def track_record(self) -> tuple[dict[int, int], set[int]]:
-        """Accepted minus failed audits per provider, and the providers not to ask again, unless they have an
-        accepted audit: one that declined (the task is the same for every game), or STRIKES failed audits
-        (rejected, declined or expired)."""
+    def track_record(self, odds: bool = False) -> tuple[dict[int, int], set[int]]:
+        """For one task (odds or audits): accepted minus failed requests per provider, and the providers not to
+        ask again, unless they have one accepted: one that declined (the task is the same every time), or
+        STRIKES failed requests (rejected, declined or expired)."""
         accepted: dict[int, int] = {}
         failed: dict[int, int] = {}
         declined: set[int] = set()
         for h in self.store.hires():
+            if (h["game_id"] == hire.ODDS) != odds:
+                continue
             user = h["provider_user_id"]
             if h["status"] == "accepted":
                 accepted[user] = accepted.get(user, 0) + 1
@@ -508,39 +538,50 @@ class TurnRun:
         barred = {u for u, n in failed.items() if (n >= STRIKES or u in declined) and not accepted.get(u)}
         return record, barred
 
-    def request_audit(self, game_id: int, self_id: int) -> tuple[str | None, bool]:
+    def request_work(self, game_id: int, self_id: int) -> tuple[str | None, bool, bool]:
+        """Discover a provider for the odds (game_id ODDS) or for an audit of game_id, and post one complete
+        request as a reply to its offer. Returns (note, failed, sent)."""
         cfg, store = self.cfg, self.store
+        odds = game_id == hire.ODDS
+        what = "odds" if odds else f"audit of game {game_id}"
         blocked = self.poster.blocked()
         if blocked:
-            return f"audit request for game {game_id} waits: {blocked}", False
+            return f"{what} request waits: {blocked}", False, False
         last = store.last_discovery(game_id)
         if last is not None and last["chosen_entry_id"] is None and \
                 store.clock() - parse_time(last["at"]) < RESCAN_AFTER:
-            return None, False                       # nothing suitable a moment ago; scan again next hour
+            return None, False, False                # nothing suitable a moment ago; scan again next hour
         tried = {h["provider_user_id"] for h in store.hires(game_id)}
-        offers_seen, candidates = hire.discover(self.entries, self_id, cfg.hire_min_score, tried,
-                                                *self.track_record())
+        capabilities, min_score = (hire.ODDS_CAPABILITIES, cfg.odds_min_score) if odds else \
+            (hire.CAPABILITIES, cfg.hire_min_score)
+        offers_seen, candidates = hire.discover(self.entries, self_id, min_score, tried, *self.track_record(odds),
+                                                capabilities=capabilities)
         chosen = candidates[0] if candidates and candidates[0]["suitable"] else None
         store.add_discovery(self.run_id, game_id, offers_seen, candidates, chosen["entry_id"] if chosen else None)
-        store.add_event(f"game:{game_id}", self.run_id, "discovery",
+        store.add_event("odds" if odds else f"game:{game_id}", self.run_id, "discovery",
                         {"offers": offers_seen, "chosen": chosen["entry_id"] if chosen else None,
                          "top": [[c["entry_id"], c["score"], c["reason"]] for c in candidates[:3]]})
-        self.log("discovery", game=game_id, offers_seen=offers_seen, candidates=candidates[:5],
+        self.log("discovery", task=what, offers_seen=offers_seen, candidates=candidates[:5],
                  chosen=chosen["entry_id"] if chosen else None)
         if chosen is None:
-            return f"no suitable auditor among {offers_seen} offers for game {game_id}", False
+            return f"no suitable provider among {offers_seen} offers for the {what}", False, False
 
-        game = rebuild([dict(r) for r in store.games()], [dict(r) for r in store.shots()], str)[game_id - 1]
-        token = hire.token_for(game_id, chosen["entry_id"])
-        shots = [{"n": s["n"], "cell": s["cell"], "result": s["result"], "hint": s["hint"]} for s in game.shots]
-        expected = hire.expected_answers(token, game.commit, game.reveal, shots)
         deadline = store.clock() + timedelta(hours=cfg.hire_deadline_hours)
-        due = engine.fmt_time(deadline.astimezone(cfg.season_start.tzinfo).isoformat())
-        body = hire.request_body(token, game_id, game.commit, game.reveal, shots,
-                                 f"{due} ({cfg.hire_deadline_hours:g} hours)")
-        violations = post_violations(body, secret_values(), [game.commit])
+        due = f"{engine.fmt_time(deadline.astimezone(cfg.season_start.tzinfo).isoformat())} " \
+              f"({cfg.hire_deadline_hours:g} hours)"
+        if odds:
+            token = hire.odds_token(chosen["entry_id"])
+            expected = hire.odds_expected()
+            body, commitments = hire.odds_request_body(token, due, expected), []
+        else:
+            game = rebuild([dict(r) for r in store.games()], [dict(r) for r in store.shots()], str)[game_id - 1]
+            token = hire.token_for(game_id, chosen["entry_id"])
+            shots = [{"n": s["n"], "cell": s["cell"], "result": s["result"], "hint": s["hint"]} for s in game.shots]
+            expected = hire.expected_answers(token, game.commit, game.reveal, shots)
+            body, commitments = hire.request_body(token, game_id, game.commit, game.reveal, shots, due), [game.commit]
+        violations = post_violations(body, secret_values(), commitments)
         if violations:
-            return f"audit request for game {game_id} failed the filter: {violations}", True
+            return f"{what} request failed the filter: {violations}", True, False
         key = f"hire:{token}"
         try:
             store.add_hire(token, game_id, chosen["entry_id"], chosen["user_id"], chosen["score"],
@@ -552,19 +593,25 @@ class TurnRun:
             raise
         store.add_event(token, self.run_id, "hire_requested", {"offer": chosen["entry_id"], "score": chosen["score"]})
         outcome = self.poster.execute(key)
-        return f"audit of game {game_id} requested from offer {chosen['entry_id']}: {outcome}", \
-            outcome in ("unverified", "failed")
+        return f"{what} requested from offer {chosen['entry_id']}: {outcome}", outcome in ("unverified", "failed"), \
+            True
 
     def discovery_preview(self, self_id: int) -> str:
-        """Dry runs: which offer would be hired, without writing anything."""
-        offers_seen, candidates = hire.discover(self.entries, self_id, self.cfg.hire_min_score, set(),
-                                                *self.track_record())
-        self.result["discovery"] = candidates
-        best = candidates[0] if candidates and candidates[0]["suitable"] else None
-        if best is None:
-            return f"auditor discovery: {offers_seen} offers read, none suitable"
-        return (f"auditor discovery: {offers_seen} offers read, best is entry {best['entry_id']} "
-                f"(score {best['score']}: {', '.join(best['capabilities'])})")
+        """Dry runs: which offers would be hired, without writing anything."""
+        notes = []
+        for odds, label, capabilities, min_score in (
+                (True, "odds", hire.ODDS_CAPABILITIES, self.cfg.odds_min_score),
+                (False, "auditor", hire.CAPABILITIES, self.cfg.hire_min_score)):
+            if odds and not self.cfg.odds_enabled:
+                continue
+            offers_seen, candidates = hire.discover(self.entries, self_id, min_score, set(),
+                                                    *self.track_record(odds), capabilities=capabilities)
+            self.result[f"{label}_discovery"] = candidates
+            best = candidates[0] if candidates and candidates[0]["suitable"] else None
+            notes.append(f"{label} discovery: {offers_seen} offers read, none suitable" if best is None else
+                         f"{label} discovery: {offers_seen} offers read, best is entry {best['entry_id']} "
+                         f"(score {best['score']}: {', '.join(best['capabilities'])})")
+        return "; ".join(notes)
 
 
 class Poster:
@@ -706,7 +753,9 @@ def spectator_state(cfg: Config, store: Store) -> dict | None:
     state["audits"] = [{"game": h["game_id"], "status": h["status"], "offer": h["provider_entry_id"],
                         "deadline": h["deadline"], "checks": json.loads(h["checks"]) if h["checks"] else None,
                         "mismatches": len(json.loads(h["expected"])["mismatches"]),
-                        "commit_matches": json.loads(h["expected"])["commit_matches"]} for h in store.hires()]
+                        "commit_matches": json.loads(h["expected"])["commit_matches"]} for h in store.hires()
+                       if h["game_id"] != hire.ODDS]
+    state["odds"] = hire.odds_summary(store.hires())
     return state
 
 
